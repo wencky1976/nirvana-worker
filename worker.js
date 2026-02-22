@@ -15,6 +15,7 @@ const { createClient } = require("@supabase/supabase-js");
 const { chromium } = require("playwright");
 const axios = require("axios");
 const { HttpsProxyAgent } = require("https-proxy-agent");
+const proxyChain = require("proxy-chain");
 
 // ── Config ──────────────────────────────────────────────
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -37,12 +38,14 @@ function generateUule(canonicalName) {
 
 // ── Decodo Proxy URL ────────────────────────────────────
 function buildProxyUrl() {
-  // Decodo residential proxy — URL-encode credentials for safety (~ and special chars)
-  const encodedUser = encodeURIComponent(DECODO_USER);
+  // Decodo residential proxy — US country targeting via username
+  const user = `${DECODO_USER}-country-us`;
+  const encodedUser = encodeURIComponent(user);
   const encodedPass = encodeURIComponent(DECODO_PASS);
   return {
-    server: `http://${encodedUser}:${encodedPass}@gate.decodo.com:10001`,
-    username: DECODO_USER,
+    // Full URL with auth for proxy-chain and HttpsProxyAgent
+    url: `http://${encodedUser}:${encodedPass}@gate.decodo.com:10001`,
+    username: user,
     password: DECODO_PASS,
   };
 }
@@ -83,14 +86,13 @@ async function runJourney(job) {
 
   // Test proxy connection using Decodo's exact method
   try {
-    const proxyAgent = new HttpsProxyAgent(
-      `http://${DECODO_USER}:${DECODO_PASS}@gate.decodo.com:10001`
-    );
+    const proxyAgent = new HttpsProxyAgent(proxy.url);
     const ipCheck = await axios.get("https://ip.decodo.com/json", {
       httpsAgent: proxyAgent,
       timeout: 15000,
     });
-    log("proxy_verified", `IP: ${JSON.stringify(ipCheck.data)}`);
+    const d = ipCheck.data;
+    log("proxy_verified", `IP: ${d.ip || d.query} — ${d.city || "?"}, ${d.country || d.country_code || "?"}`);
   } catch (err) {
     log("proxy_test_failed", err.message);
     return { success: false, found: false, steps, error: "Proxy connection failed: " + err.message, duration_ms: Date.now() - startTime };
@@ -106,23 +108,22 @@ async function runJourney(job) {
   }
 
   let browser;
+  let localProxy;
   try {
-    // Decodo proxy — credentials in URL + httpCredentials as fallback
+    // Use proxy-chain to create a local anonymous proxy
+    // This handles auth so Playwright doesn't have to
+    const localProxy = await proxyChain.anonymizeProxy(proxy.url);
+    log("local_proxy_created", localProxy);
+
     browser = await chromium.launch({
       headless: false,
       proxy: {
-        server: proxy.server,
-        username: proxy.username,
-        password: proxy.password,
+        server: localProxy,
       },
     });
     log("browser_launched");
 
     const context = await browser.newContext({
-      httpCredentials: {
-        username: proxy.username,
-        password: proxy.password,
-      },
       viewport: mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 },
       userAgent: mobile
         ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
@@ -297,6 +298,8 @@ async function runJourney(job) {
     return { success: false, found: false, steps, error: err.message, duration_ms: Date.now() - startTime };
   } finally {
     if (browser) await browser.close().catch(() => {});
+    // Clean up proxy-chain
+    try { await proxyChain.closeAnonymizedProxy(localProxy, true); } catch {}
   }
 }
 
