@@ -22,12 +22,40 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const DECODO_USER = process.env.DECODO_USER;
 const DECODO_PASS = process.env.DECODO_PASS;
+const TWOCAPTCHA_KEY = process.env.TWOCAPTCHA_API_KEY;
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || "60000", 10);
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || "1", 10);
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 let activeJobs = 0;
+
+// ── 2Captcha reCAPTCHA solver ────────────────────────────
+async function solveRecaptcha(pageUrl, siteKey) {
+  // Submit task
+  const submitRes = await axios.post("https://2captcha.com/in.php", null, {
+    params: {
+      key: TWOCAPTCHA_KEY,
+      method: "userrecaptcha",
+      googlekey: siteKey,
+      pageurl: pageUrl,
+      json: 1,
+    },
+  });
+  if (submitRes.data.status !== 1) throw new Error("2Captcha submit failed: " + submitRes.data.request);
+  const captchaId = submitRes.data.request;
+
+  // Poll for result (up to 120 seconds)
+  for (let i = 0; i < 24; i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    const res = await axios.get("https://2captcha.com/res.php", {
+      params: { key: TWOCAPTCHA_KEY, action: "get", id: captchaId, json: 1 },
+    });
+    if (res.data.status === 1) return res.data.request; // token!
+    if (res.data.request !== "CAPCHA_NOT_READY") throw new Error("2Captcha error: " + res.data.request);
+  }
+  throw new Error("2Captcha timeout — no solution in 120s");
+}
 
 // ── UULE Generator ─────────────────────────────────────
 const UULE_KEY = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -39,13 +67,12 @@ function generateUule(canonicalName) {
 // ── Decodo Proxy URL ────────────────────────────────────
 function buildProxyUrl() {
   // Decodo residential proxy — US country targeting via username
-  const user = DECODO_USER;
-  const encodedUser = encodeURIComponent(user);
+  // Use US-only endpoint (port 10001 = US residential)
+  const encodedUser = encodeURIComponent(DECODO_USER);
   const encodedPass = encodeURIComponent(DECODO_PASS);
   return {
-    // Full URL with auth for proxy-chain and HttpsProxyAgent
-    url: `http://${encodedUser}:${encodedPass}@gate.decodo.com:10001`,
-    username: user,
+    url: `http://${encodedUser}:${encodedPass}@us.decodo.com:10001`,
+    username: DECODO_USER,
     password: DECODO_PASS,
   };
 }
@@ -126,10 +153,36 @@ async function runJourney(job) {
     log("google_loaded");
     await page.waitForTimeout(rand(800, 1500));
 
-    // Check for captcha
+    // Check for captcha and solve with 2Captcha
     if (page.url().includes("/sorry/") || page.url().includes("captcha")) {
-      log("captcha_detected", "Google CAPTCHA — aborting this attempt");
-      return { success: false, found: false, steps, error: "Google CAPTCHA", duration_ms: Date.now() - startTime };
+      log("captcha_detected", "Google CAPTCHA — solving with 2Captcha...");
+      try {
+        // Extract sitekey from the page
+        const siteKey = await page.evaluate(() => {
+          const el = document.querySelector('.g-recaptcha');
+          return el ? el.getAttribute('data-sitekey') : null;
+        });
+        if (!siteKey) throw new Error("No reCAPTCHA sitekey found on page");
+        log("captcha_sitekey", siteKey);
+
+        const token = await solveRecaptcha(page.url(), siteKey);
+        log("captcha_solved", `Token: ${token.slice(0, 30)}...`);
+
+        // Inject the token into the page
+        await page.evaluate((t) => {
+          document.getElementById('g-recaptcha-response').value = t;
+          // Try to submit the form
+          const form = document.querySelector('form');
+          if (form) form.submit();
+        }, token);
+
+        await page.waitForLoadState("domcontentloaded");
+        await page.waitForTimeout(rand(2000, 4000));
+        log("captcha_submitted", "Form submitted with token");
+      } catch (err) {
+        log("captcha_solve_failed", err.message);
+        return { success: false, found: false, steps, error: "CAPTCHA solve failed: " + err.message, duration_ms: Date.now() - startTime };
+      }
     }
 
     // Cookie consent
@@ -163,8 +216,26 @@ async function runJourney(job) {
     } catch {
       // Check for captcha again after search
       if (page.url().includes("/sorry/")) {
-        log("captcha_after_search", "CAPTCHA on results page");
-        return { success: false, found: false, steps, error: "Google CAPTCHA after search", duration_ms: Date.now() - startTime };
+        log("captcha_after_search", "Solving with 2Captcha...");
+        try {
+          const siteKey = await page.evaluate(() => {
+            const el = document.querySelector('.g-recaptcha');
+            return el ? el.getAttribute('data-sitekey') : null;
+          });
+          if (siteKey) {
+            const token = await solveRecaptcha(page.url(), siteKey);
+            await page.evaluate((t) => {
+              document.getElementById('g-recaptcha-response').value = t;
+              const form = document.querySelector('form');
+              if (form) form.submit();
+            }, token);
+            await page.waitForLoadState("domcontentloaded");
+            await page.waitForTimeout(rand(2000, 4000));
+            log("captcha_solved_after_search");
+          }
+        } catch (err) {
+          log("captcha_solve_failed_after_search", err.message);
+        }
       }
     }
     await page.waitForTimeout(rand(1500, 3000));
