@@ -31,17 +31,18 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 let activeJobs = 0;
 
 // ── 2Captcha reCAPTCHA solver ────────────────────────────
-async function solveRecaptcha(pageUrl, siteKey) {
-  // Submit task
-  const submitRes = await axios.post("https://2captcha.com/in.php", null, {
-    params: {
-      key: TWOCAPTCHA_KEY,
-      method: "userrecaptcha",
-      googlekey: siteKey,
-      pageurl: pageUrl,
-      json: 1,
-    },
-  });
+async function solveRecaptcha(pageUrl, siteKey, dataS) {
+  // Submit task — Google sorry page requires data-s parameter
+  const params = {
+    key: TWOCAPTCHA_KEY,
+    method: "userrecaptcha",
+    googlekey: siteKey,
+    pageurl: pageUrl,
+    json: 1,
+  };
+  if (dataS) params["data-s"] = dataS; // Critical for Google sorry page!
+
+  const submitRes = await axios.post("https://2captcha.com/in.php", null, { params });
   if (submitRes.data.status !== 1) throw new Error("2Captcha submit failed: " + submitRes.data.request);
   const captchaId = submitRes.data.request;
 
@@ -107,11 +108,8 @@ async function runJourney(job) {
       }
     : null;
 
-  // Build proxy
   const proxy = buildProxyUrl();
   log("proxy_configured", `${proxy.username} → gate.decodo.com:10001`);
-
-  // Skip proxy test — go straight to browser (we know auth works with plain username)
 
   // Build Google URL with UULE
   let googleUrl = "https://www.google.com/?gl=us&hl=en";
@@ -148,40 +146,51 @@ async function runJourney(job) {
     });
     const page = await context.newPage();
 
+    // No route blocking needed — we solve captcha via HTTP, not in-browser
+
     // Go to Google
     await page.goto(googleUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
     log("google_loaded");
     await page.waitForTimeout(rand(800, 1500));
 
-    // Check for captcha and solve with 2Captcha
+    // Check for captcha — solve with 2Captcha
     if (page.url().includes("/sorry/") || page.url().includes("captcha")) {
-      log("captcha_detected", "Google CAPTCHA — solving with 2Captcha...");
+      log("captcha_detected", "Solving with 2Captcha...");
       try {
-        // Extract sitekey from the page
-        const siteKey = await page.evaluate(() => {
-          const el = document.querySelector('.g-recaptcha');
-          return el ? el.getAttribute('data-sitekey') : null;
+        // Extract siteKey and data-s from the captcha page
+        const captchaInfo = await page.evaluate(() => {
+          const el = document.querySelector('[data-sitekey]') || document.querySelector('.g-recaptcha');
+          if (!el) return null;
+          return { siteKey: el.getAttribute('data-sitekey'), dataS: el.getAttribute('data-s') || '' };
         });
-        if (!siteKey) throw new Error("No reCAPTCHA sitekey found on page");
-        log("captcha_sitekey", siteKey);
+        if (!captchaInfo || !captchaInfo.siteKey) throw new Error("Could not find reCAPTCHA sitekey on page");
+        log("captcha_sitekey", `key=${captchaInfo.siteKey.slice(0,20)}... data-s=${captchaInfo.dataS ? 'yes' : 'no'}`);
 
-        const token = await solveRecaptcha(page.url(), siteKey);
-        log("captcha_solved", `Token: ${token.slice(0, 30)}...`);
+        const token = await solveRecaptcha(page.url(), captchaInfo.siteKey, captchaInfo.dataS);
+        log("captcha_solved", `token=${token.slice(0,30)}...`);
 
-        // Inject the token into the page
-        await page.evaluate((t) => {
-          document.getElementById('g-recaptcha-response').value = t;
-          // Try to submit the form
+        // Inject the token and submit
+        await page.evaluate((tok) => {
+          document.getElementById('g-recaptcha-response').value = tok;
+          // Also set for invisible recaptcha
+          const ta = document.querySelector('textarea[name="g-recaptcha-response"]');
+          if (ta) ta.value = tok;
+          // Submit the form
           const form = document.querySelector('form');
           if (form) form.submit();
         }, token);
 
-        await page.waitForLoadState("domcontentloaded");
-        await page.waitForTimeout(rand(2000, 4000));
-        log("captcha_submitted", "Form submitted with token");
+        await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
+        log("captcha_submitted", `now at: ${page.url()}`);
+
+        // If still on sorry page, captcha failed
+        if (page.url().includes("/sorry/")) {
+          log("captcha_failed", "Still on sorry page after solve");
+          return { success: false, found: false, captcha: true, steps, error: "Captcha solved but still blocked", duration_ms: Date.now() - startTime };
+        }
       } catch (err) {
-        log("captcha_solve_failed", err.message);
-        return { success: false, found: false, steps, error: "CAPTCHA solve failed: " + err.message, duration_ms: Date.now() - startTime };
+        log("captcha_solve_error", err.message);
+        return { success: false, found: false, captcha: true, steps, error: "Captcha solve failed: " + err.message, duration_ms: Date.now() - startTime };
       }
     }
 
@@ -214,27 +223,34 @@ async function runJourney(job) {
       await page.waitForSelector("#search, #rso, .g", { timeout: 15000 });
       log("results_rendered");
     } catch {
-      // Check for captcha again after search
+      // Check for captcha again after search — solve it
       if (page.url().includes("/sorry/")) {
         log("captcha_after_search", "Solving with 2Captcha...");
         try {
-          const siteKey = await page.evaluate(() => {
-            const el = document.querySelector('.g-recaptcha');
-            return el ? el.getAttribute('data-sitekey') : null;
+          const captchaInfo = await page.evaluate(() => {
+            const el = document.querySelector('[data-sitekey]') || document.querySelector('.g-recaptcha');
+            if (!el) return null;
+            return { siteKey: el.getAttribute('data-sitekey'), dataS: el.getAttribute('data-s') || '' };
           });
-          if (siteKey) {
-            const token = await solveRecaptcha(page.url(), siteKey);
-            await page.evaluate((t) => {
-              document.getElementById('g-recaptcha-response').value = t;
-              const form = document.querySelector('form');
-              if (form) form.submit();
-            }, token);
-            await page.waitForLoadState("domcontentloaded");
-            await page.waitForTimeout(rand(2000, 4000));
-            log("captcha_solved_after_search");
-          }
+          if (!captchaInfo || !captchaInfo.siteKey) throw new Error("No reCAPTCHA sitekey found");
+
+          const token = await solveRecaptcha(page.url(), captchaInfo.siteKey, captchaInfo.dataS);
+          log("captcha_solved_post_search", `token=${token.slice(0,30)}...`);
+
+          await page.evaluate((tok) => {
+            document.getElementById('g-recaptcha-response').value = tok;
+            const ta = document.querySelector('textarea[name="g-recaptcha-response"]');
+            if (ta) ta.value = tok;
+            const form = document.querySelector('form');
+            if (form) form.submit();
+          }, token);
+
+          await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
+          await page.waitForSelector("#search, #rso, .g", { timeout: 15000 });
+          log("captcha_bypassed", "Search results loaded after captcha solve");
         } catch (err) {
-          log("captcha_solve_failed_after_search", err.message);
+          log("captcha_solve_error_post", err.message);
+          return { success: false, found: false, captcha: true, steps, error: "Post-search captcha failed: " + err.message, duration_ms: Date.now() - startTime };
         }
       }
     }
@@ -373,7 +389,15 @@ async function processJob(job) {
     .update({ status: "running", started_at: new Date().toISOString() })
     .eq("id", jobId);
 
-  const result = await runJourney(job);
+  // Retry up to 5 times with fresh IPs on CAPTCHA
+  let result;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    if (attempt > 1) console.log(`  🔄 Retry #${attempt} with fresh IP...`);
+    result = await runJourney(job);
+    if (!result.captcha) break; // Success or non-captcha failure
+    // Wait a bit before retry
+    await new Promise(r => setTimeout(r, rand(2000, 5000)));
+  }
 
   // Save result
   await supabase
