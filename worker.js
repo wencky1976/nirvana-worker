@@ -34,31 +34,12 @@ function generateUule(canonicalName) {
 }
 
 // ── Decodo Proxy URL ────────────────────────────────────
-function buildProxyUrl(geo) {
-  // Rotating proxy — fresh IP every connection
-  // City/state targeting via username parameters
-  let user = `user-${DECODO_USER}`;
-  // Map common country names to 2-letter codes
-  const countryMap = { "united states": "us", "united kingdom": "gb", "canada": "ca", "australia": "au" };
-  const raw = (geo?.country || "us").toLowerCase();
-  const country = countryMap[raw] || raw.slice(0, 2);
-  user += `-country-${country}`;
-
-  if (geo?.state && country === "us") {
-    const state = geo.state.toLowerCase().replace(/\s+/g, "_");
-    user += `-state-us_${state}`;
-  }
-  if (geo?.city) {
-    const city = geo.city.toLowerCase().replace(/\s+/g, "_");
-    user += `-city-${city}`;
-  }
-
-  // Random session ID for sticky session during this journey
-  user += `-session-${Math.random().toString(36).slice(2, 10)}`;
-
+function buildProxyUrl() {
+  // Simple US rotating proxy — fresh IP every connection
+  // UULE handles geo-targeting, so we just need a clean US residential IP
   return {
-    server: "http://us.decodo.com:10000",
-    username: user,
+    server: "http://gate.decodo.com:10000",
+    username: DECODO_USER,
     password: DECODO_PASS,
   };
 }
@@ -94,8 +75,8 @@ async function runJourney(job) {
     : null;
 
   // Build proxy
-  const proxy = buildProxyUrl(geo);
-  log("proxy_configured", `${proxy.username.split("-session-")[0]} → ${proxy.server}`);
+  const proxy = buildProxyUrl();
+  log("proxy_configured", `${proxy.username} → ${proxy.server}`);
 
   // Build Google URL with UULE
   let googleUrl = "https://www.google.com/?gl=us&hl=en";
@@ -108,11 +89,13 @@ async function runJourney(job) {
 
   let browser;
   try {
-    // TEMP: Launch without proxy to test if VPS can reach Google
     browser = await chromium.launch({
       headless: false,
-      // proxy temporarily disabled for debugging
-      // proxy: { server: proxy.server, username: proxy.username, password: proxy.password },
+      proxy: {
+        server: proxy.server,
+        username: proxy.username,
+        password: proxy.password,
+      },
     });
     log("browser_launched");
 
