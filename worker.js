@@ -38,7 +38,7 @@ function buildProxyUrl() {
   // Simple US rotating proxy — fresh IP every connection
   // UULE handles geo-targeting, so we just need a clean US residential IP
   return {
-    server: "http://gate.decodo.com:10000",
+    server: "http://gate.decodo.com:10001",
     username: DECODO_USER,
     password: DECODO_PASS,
   };
