@@ -89,17 +89,21 @@ async function runJourney(job) {
 
   let browser;
   try {
+    // Decodo official Playwright integration:
+    // Proxy server in launch, credentials in context httpCredentials
     browser = await chromium.launch({
       headless: false,
       proxy: {
         server: proxy.server,
-        username: proxy.username,
-        password: proxy.password,
       },
     });
     log("browser_launched");
 
     const context = await browser.newContext({
+      httpCredentials: {
+        username: proxy.username,
+        password: proxy.password,
+      },
       viewport: mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 },
       userAgent: mobile
         ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
