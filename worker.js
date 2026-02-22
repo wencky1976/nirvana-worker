@@ -37,9 +37,11 @@ function generateUule(canonicalName) {
 
 // ── Decodo Proxy URL ────────────────────────────────────
 function buildProxyUrl() {
-  // Decodo residential proxy — credentials in URL (from Decodo dashboard)
+  // Decodo residential proxy — URL-encode credentials for safety (~ and special chars)
+  const encodedUser = encodeURIComponent(DECODO_USER);
+  const encodedPass = encodeURIComponent(DECODO_PASS);
   return {
-    server: `http://${DECODO_USER}:${DECODO_PASS}@gate.decodo.com:10001`,
+    server: `http://${encodedUser}:${encodedPass}@gate.decodo.com:10001`,
     username: DECODO_USER,
     password: DECODO_PASS,
   };
@@ -88,7 +90,7 @@ async function runJourney(job) {
       httpsAgent: proxyAgent,
       timeout: 15000,
     });
-    log("proxy_verified", `IP: ${ipCheck.data.ip} (${ipCheck.data.city}, ${ipCheck.data.country})`);
+    log("proxy_verified", `IP: ${JSON.stringify(ipCheck.data)}`);
   } catch (err) {
     log("proxy_test_failed", err.message);
     return { success: false, found: false, steps, error: "Proxy connection failed: " + err.message, duration_ms: Date.now() - startTime };
