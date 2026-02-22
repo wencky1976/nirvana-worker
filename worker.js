@@ -13,6 +13,8 @@
 require("dotenv").config();
 const { createClient } = require("@supabase/supabase-js");
 const { chromium } = require("playwright");
+const axios = require("axios");
+const { HttpsProxyAgent } = require("https-proxy-agent");
 
 // ── Config ──────────────────────────────────────────────
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -75,7 +77,22 @@ async function runJourney(job) {
 
   // Build proxy
   const proxy = buildProxyUrl();
-  log("proxy_configured", `${proxy.username} → ${proxy.server}`);
+  log("proxy_configured", `${proxy.username} → gate.decodo.com:10001`);
+
+  // Test proxy connection using Decodo's exact method
+  try {
+    const proxyAgent = new HttpsProxyAgent(
+      `http://${DECODO_USER}:${DECODO_PASS}@gate.decodo.com:10001`
+    );
+    const ipCheck = await axios.get("https://ip.decodo.com/json", {
+      httpsAgent: proxyAgent,
+      timeout: 15000,
+    });
+    log("proxy_verified", `IP: ${ipCheck.data.ip} (${ipCheck.data.city}, ${ipCheck.data.country})`);
+  } catch (err) {
+    log("proxy_test_failed", err.message);
+    return { success: false, found: false, steps, error: "Proxy connection failed: " + err.message, duration_ms: Date.now() - startTime };
+  }
 
   // Build Google URL with UULE
   let googleUrl = "https://www.google.com/?gl=us&hl=en";
