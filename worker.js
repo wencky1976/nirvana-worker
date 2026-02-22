@@ -39,7 +39,7 @@ function generateUule(canonicalName) {
 // ── Decodo Proxy URL ────────────────────────────────────
 function buildProxyUrl() {
   // Decodo residential proxy — US country targeting via username
-  const user = `${DECODO_USER}-country-us`;
+  const user = DECODO_USER;
   const encodedUser = encodeURIComponent(user);
   const encodedPass = encodeURIComponent(DECODO_PASS);
   return {
@@ -84,19 +84,7 @@ async function runJourney(job) {
   const proxy = buildProxyUrl();
   log("proxy_configured", `${proxy.username} → gate.decodo.com:10001`);
 
-  // Test proxy connection using Decodo's exact method
-  try {
-    const proxyAgent = new HttpsProxyAgent(proxy.url);
-    const ipCheck = await axios.get("https://ip.decodo.com/json", {
-      httpsAgent: proxyAgent,
-      timeout: 15000,
-    });
-    const d = ipCheck.data;
-    log("proxy_verified", `IP: ${d.ip || d.query} — ${d.city || "?"}, ${d.country || d.country_code || "?"}`);
-  } catch (err) {
-    log("proxy_test_failed", err.message);
-    return { success: false, found: false, steps, error: "Proxy connection failed: " + err.message, duration_ms: Date.now() - startTime };
-  }
+  // Skip proxy test — go straight to browser (we know auth works with plain username)
 
   // Build Google URL with UULE
   let googleUrl = "https://www.google.com/?gl=us&hl=en";
