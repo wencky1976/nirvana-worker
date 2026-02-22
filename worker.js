@@ -108,13 +108,11 @@ async function runJourney(job) {
 
   let browser;
   try {
+    // TEMP: Launch without proxy to test if VPS can reach Google
     browser = await chromium.launch({
-      headless: false, // Visible browser — watch the journey live!
-      proxy: {
-        server: proxy.server,
-        username: proxy.username,
-        password: proxy.password,
-      },
+      headless: false,
+      // proxy temporarily disabled for debugging
+      // proxy: { server: proxy.server, username: proxy.username, password: proxy.password },
     });
     log("browser_launched");
 
