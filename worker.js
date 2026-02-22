@@ -35,10 +35,9 @@ function generateUule(canonicalName) {
 
 // ── Decodo Proxy URL ────────────────────────────────────
 function buildProxyUrl() {
-  // Simple US rotating proxy — fresh IP every connection
-  // UULE handles geo-targeting, so we just need a clean US residential IP
+  // Decodo residential proxy — credentials in URL (from Decodo dashboard)
   return {
-    server: "http://gate.decodo.com:10001",
+    server: `http://${DECODO_USER}:${DECODO_PASS}@gate.decodo.com:10001`,
     username: DECODO_USER,
     password: DECODO_PASS,
   };
@@ -89,12 +88,13 @@ async function runJourney(job) {
 
   let browser;
   try {
-    // Decodo official Playwright integration:
-    // Proxy server in launch, credentials in context httpCredentials
+    // Decodo proxy — credentials in URL + httpCredentials as fallback
     browser = await chromium.launch({
       headless: false,
       proxy: {
         server: proxy.server,
+        username: proxy.username,
+        password: proxy.password,
       },
     });
     log("browser_launched");
