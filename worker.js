@@ -109,7 +109,7 @@ async function runJourney(job) {
   let browser;
   try {
     browser = await chromium.launch({
-      headless: true,
+      headless: false, // Visible browser — watch the journey live!
       proxy: {
         server: proxy.server,
         username: proxy.username,
