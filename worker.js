@@ -30,30 +30,51 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 let activeJobs = 0;
 
-// ── 2Captcha reCAPTCHA solver ────────────────────────────
-async function solveRecaptcha(pageUrl, siteKey, dataS) {
-  // Submit task — Google sorry page requires data-s parameter
-  const params = {
-    key: TWOCAPTCHA_KEY,
-    method: "userrecaptcha",
-    googlekey: siteKey,
-    pageurl: pageUrl,
-    json: 1,
+// ── 2Captcha reCAPTCHA solver (API v2 — createTask/getTaskResult) ────
+async function solveRecaptcha(pageUrl, siteKey, dataS, proxyInfo, cookies, userAgent) {
+  // Use RecaptchaV2Task WITH proxy for Google services (IP matching required)
+  // data-s is CRITICAL for Google sorry pages — can only be used ONCE per attempt
+  const task = {
+    type: proxyInfo ? "RecaptchaV2Task" : "RecaptchaV2TaskProxyless",
+    websiteURL: pageUrl,
+    websiteKey: siteKey,
   };
-  if (dataS) params["data-s"] = dataS; // Critical for Google sorry page!
+  if (dataS) task.recaptchaDataSValue = dataS;
+  if (userAgent) task.userAgent = userAgent;
+  if (cookies) task.cookies = cookies;
+  
+  // Add proxy info for IP matching (important for Google)
+  if (proxyInfo) {
+    task.proxyType = "http";
+    task.proxyAddress = proxyInfo.host;
+    task.proxyPort = proxyInfo.port;
+    if (proxyInfo.username) task.proxyLogin = proxyInfo.username;
+    if (proxyInfo.password) task.proxyPassword = proxyInfo.password;
+  }
 
-  const submitRes = await axios.post("https://2captcha.com/in.php", null, { params });
-  if (submitRes.data.status !== 1) throw new Error("2Captcha submit failed: " + submitRes.data.request);
-  const captchaId = submitRes.data.request;
+  console.log(`  🔐 2Captcha: submitting ${task.type} (data-s: ${dataS ? 'yes' : 'no'}, proxy: ${proxyInfo ? 'yes' : 'no'})`);
 
-  // Poll for result (up to 120 seconds)
+  // createTask (API v2)
+  const createRes = await axios.post("https://api.2captcha.com/createTask", {
+    clientKey: TWOCAPTCHA_KEY,
+    task,
+  });
+  if (createRes.data.errorId !== 0) throw new Error("2Captcha createTask failed: " + (createRes.data.errorDescription || createRes.data.errorCode));
+  const taskId = createRes.data.taskId;
+  console.log(`  🔐 2Captcha: task ${taskId} created, waiting for solution...`);
+
+  // getTaskResult — poll up to 120 seconds
   for (let i = 0; i < 24; i++) {
     await new Promise((r) => setTimeout(r, 5000));
-    const res = await axios.get("https://2captcha.com/res.php", {
-      params: { key: TWOCAPTCHA_KEY, action: "get", id: captchaId, json: 1 },
+    const res = await axios.post("https://api.2captcha.com/getTaskResult", {
+      clientKey: TWOCAPTCHA_KEY,
+      taskId,
     });
-    if (res.data.status === 1) return res.data.request; // token!
-    if (res.data.request !== "CAPCHA_NOT_READY") throw new Error("2Captcha error: " + res.data.request);
+    if (res.data.status === "ready") {
+      console.log(`  🔐 2Captcha: solved in ${(i + 1) * 5}s`);
+      return res.data.solution.gRecaptchaResponse;
+    }
+    if (res.data.errorId !== 0) throw new Error("2Captcha error: " + (res.data.errorDescription || res.data.errorCode));
   }
   throw new Error("2Captcha timeout — no solution in 120s");
 }
@@ -157,26 +178,41 @@ async function runJourney(job) {
     if (page.url().includes("/sorry/") || page.url().includes("captcha")) {
       log("captcha_detected", "Solving with 2Captcha...");
       try {
-        // Extract siteKey and data-s from the captcha page
+        // Extract siteKey, data-s, and cookies from the captcha page
         const captchaInfo = await page.evaluate(() => {
           const el = document.querySelector('[data-sitekey]') || document.querySelector('.g-recaptcha');
           if (!el) return null;
-          return { siteKey: el.getAttribute('data-sitekey'), dataS: el.getAttribute('data-s') || '' };
+          return {
+            siteKey: el.getAttribute('data-sitekey'),
+            dataS: el.getAttribute('data-s') || '',
+          };
         });
         if (!captchaInfo || !captchaInfo.siteKey) throw new Error("Could not find reCAPTCHA sitekey on page");
-        log("captcha_sitekey", `key=${captchaInfo.siteKey.slice(0,20)}... data-s=${captchaInfo.dataS ? 'yes' : 'no'}`);
+        
+        // Get cookies for 2Captcha (important for Google)
+        const browserCookies = await context.cookies();
+        const cookieStr = browserCookies.map(c => `${c.name}=${c.value}`).join("; ");
+        
+        log("captcha_sitekey", `key=${captchaInfo.siteKey.slice(0,20)}... data-s=${captchaInfo.dataS ? 'yes' : 'no'} cookies=${browserCookies.length}`);
 
-        const token = await solveRecaptcha(page.url(), captchaInfo.siteKey, captchaInfo.dataS);
+        // Pass proxy info so 2Captcha solves from same IP (critical for Google)
+        const proxyInfo = { host: "gate.decodo.com", port: 10001, username: DECODO_USER, password: DECODO_PASS };
+        const ua = mobile
+          ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"
+          : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36";
+
+        const token = await solveRecaptcha(page.url(), captchaInfo.siteKey, captchaInfo.dataS, proxyInfo, cookieStr, ua);
         log("captcha_solved", `token=${token.slice(0,30)}...`);
 
-        // Inject the token and submit
+        // Inject the token and submit the form
         await page.evaluate((tok) => {
-          document.getElementById('g-recaptcha-response').value = tok;
-          // Also set for invisible recaptcha
+          // Set token in all possible fields
+          const resp = document.getElementById('g-recaptcha-response');
+          if (resp) resp.value = tok;
           const ta = document.querySelector('textarea[name="g-recaptcha-response"]');
           if (ta) ta.value = tok;
-          // Submit the form
-          const form = document.querySelector('form');
+          // Submit the captcha form
+          const form = document.getElementById('captcha-form') || document.querySelector('form');
           if (form) form.submit();
         }, token);
 
@@ -185,9 +221,10 @@ async function runJourney(job) {
 
         // If still on sorry page, captcha failed
         if (page.url().includes("/sorry/")) {
-          log("captcha_failed", "Still on sorry page after solve");
+          log("captcha_failed", "Still on sorry page after solve — data-s may have expired");
           return { success: false, found: false, captcha: true, steps, error: "Captcha solved but still blocked", duration_ms: Date.now() - startTime };
         }
+        log("captcha_bypassed", "Successfully passed captcha!");
       } catch (err) {
         log("captcha_solve_error", err.message);
         return { success: false, found: false, captcha: true, steps, error: "Captcha solve failed: " + err.message, duration_ms: Date.now() - startTime };
@@ -234,14 +271,22 @@ async function runJourney(job) {
           });
           if (!captchaInfo || !captchaInfo.siteKey) throw new Error("No reCAPTCHA sitekey found");
 
-          const token = await solveRecaptcha(page.url(), captchaInfo.siteKey, captchaInfo.dataS);
+          const browserCookies = await context.cookies();
+          const cookieStr = browserCookies.map(c => `${c.name}=${c.value}`).join("; ");
+          const proxyInfo = { host: "gate.decodo.com", port: 10001, username: DECODO_USER, password: DECODO_PASS };
+          const ua = mobile
+            ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"
+            : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36";
+
+          const token = await solveRecaptcha(page.url(), captchaInfo.siteKey, captchaInfo.dataS, proxyInfo, cookieStr, ua);
           log("captcha_solved_post_search", `token=${token.slice(0,30)}...`);
 
           await page.evaluate((tok) => {
-            document.getElementById('g-recaptcha-response').value = tok;
+            const resp = document.getElementById('g-recaptcha-response');
+            if (resp) resp.value = tok;
             const ta = document.querySelector('textarea[name="g-recaptcha-response"]');
             if (ta) ta.value = tok;
-            const form = document.querySelector('form');
+            const form = document.getElementById('captcha-form') || document.querySelector('form');
             if (form) form.submit();
           }, token);
 
