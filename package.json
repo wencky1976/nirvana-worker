@@ -1,18 +1,15 @@
 {
-  "name": "nirvana-worker",
-  "version": "1.0.0",
-  "description": "NirvanaTraffic VPS worker — polls Supabase job queue, runs Playwright journeys with Decodo proxies",
+  "name": "nirvana-worker-gologin",
+  "version": "2.0.0",
+  "description": "NirvanaTraffic VPS worker v2 — GoLogin fingerprinting + Playwright + Decodo proxies",
   "main": "worker.js",
   "scripts": {
-    "start": "node worker.js",
-    "install-browser": "npx playwright install chromium"
+    "start": "node worker.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
     "playwright": "^1.41.0",
     "dotenv": "^16.3.1",
-    "axios": "^1.6.0",
-    "https-proxy-agent": "^7.0.0",
-    "proxy-chain": "^2.3.0"
+    "axios": "^1.6.0"
   }
 }

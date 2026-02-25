@@ -1,12 +1,17 @@
 /**
- * NirvanaTraffic VPS Worker
+ * NirvanaTraffic VPS Worker v2.0 — GoLogin Edition
  * 
- * Polls Supabase job queue → runs Playwright journeys with Decodo proxies → reports results.
- * Designed to run as a persistent process on a Windows VPS.
+ * Polls Supabase job queue → launches GoLogin fingerprinted browser → 
+ * connects Playwright via CDP → runs search journeys → reports results.
+ * 
+ * Changes from v1.0:
+ *   - Replaced raw chromium.launch with GoLogin API (real device fingerprints)
+ *   - Removed proxy-chain (GoLogin handles proxy auth natively)
+ *   - Removed Bablosoft FingerprintSwitcher dependency
+ *   - Browser profiles created/managed via GoLogin REST API
  * 
  * Usage:
  *   npm install
- *   npx playwright install chromium
  *   node worker.js
  */
 
@@ -14,8 +19,6 @@ require("dotenv").config();
 const { createClient } = require("@supabase/supabase-js");
 const { chromium } = require("playwright");
 const axios = require("axios");
-const { HttpsProxyAgent } = require("https-proxy-agent");
-const proxyChain = require("proxy-chain");
 
 // ── Config ──────────────────────────────────────────────
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -23,17 +26,69 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const DECODO_USER = process.env.DECODO_USER;
 const DECODO_PASS = process.env.DECODO_PASS;
 const TWOCAPTCHA_KEY = process.env.TWOCAPTCHA_API_KEY;
+const GOLOGIN_TOKEN = process.env.GOLOGIN_TOKEN;
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || "60000", 10);
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || "1", 10);
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const GL_API = "https://api.gologin.com";
+const GL_HEADERS = { Authorization: `Bearer ${GOLOGIN_TOKEN}`, "Content-Type": "application/json" };
 
 let activeJobs = 0;
 
+// ── GoLogin Profile Management ──────────────────────────
+async function createGoLoginProfile(mobile, proxyConfig) {
+  const profileData = {
+    name: `nirvana-${Date.now()}`,
+    os: "win",
+    navigator: {
+      userAgent: mobile
+        ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        : undefined, // Let GoLogin generate a realistic one for desktop
+      resolution: mobile ? "390x844" : "1920x1080",
+      language: "en-US,en",
+    },
+    proxy: {
+      mode: "http",
+      host: "gate.decodo.com",
+      port: 10001,
+      username: proxyConfig.username,
+      password: proxyConfig.password,
+    },
+    webRTC: {
+      mode: "altered",
+      enabled: true,
+    },
+  };
+
+  const res = await axios.post(`${GL_API}/browser`, profileData, { headers: GL_HEADERS });
+  return res.data.id;
+}
+
+async function startGoLoginProfile(profileId) {
+  // Start profile and get debugger websocket URL
+  const res = await axios.post(
+    `${GL_API}/browser/${profileId}/web`,
+    { isNewRecovery: true },
+    { headers: GL_HEADERS }
+  );
+  return res.data.wsUrl;
+}
+
+async function stopGoLoginProfile(profileId) {
+  try {
+    await axios.delete(`${GL_API}/browser/${profileId}/web`, { headers: GL_HEADERS });
+  } catch { /* ok — profile may already be stopped */ }
+}
+
+async function deleteGoLoginProfile(profileId) {
+  try {
+    await axios.delete(`${GL_API}/browser/${profileId}`, { headers: GL_HEADERS });
+  } catch { /* ok */ }
+}
+
 // ── 2Captcha reCAPTCHA solver (API v2 — createTask/getTaskResult) ────
 async function solveRecaptcha(pageUrl, siteKey, dataS, proxyInfo, cookies, userAgent) {
-  // Use RecaptchaV2Task WITH proxy for Google services (IP matching required)
-  // data-s is CRITICAL for Google sorry pages — can only be used ONCE per attempt
   const task = {
     type: proxyInfo ? "RecaptchaV2Task" : "RecaptchaV2TaskProxyless",
     websiteURL: pageUrl,
@@ -43,7 +98,6 @@ async function solveRecaptcha(pageUrl, siteKey, dataS, proxyInfo, cookies, userA
   if (userAgent) task.userAgent = userAgent;
   if (cookies) task.cookies = cookies;
   
-  // Add proxy info for IP matching (important for Google)
   if (proxyInfo) {
     task.proxyType = "http";
     task.proxyAddress = proxyInfo.host;
@@ -54,7 +108,6 @@ async function solveRecaptcha(pageUrl, siteKey, dataS, proxyInfo, cookies, userA
 
   console.log(`  🔐 2Captcha: submitting ${task.type} (data-s: ${dataS ? 'yes' : 'no'}, proxy: ${proxyInfo ? 'yes' : 'no'})`);
 
-  // createTask (API v2)
   const createRes = await axios.post("https://api.2captcha.com/createTask", {
     clientKey: TWOCAPTCHA_KEY,
     task,
@@ -63,7 +116,6 @@ async function solveRecaptcha(pageUrl, siteKey, dataS, proxyInfo, cookies, userA
   const taskId = createRes.data.taskId;
   console.log(`  🔐 2Captcha: task ${taskId} created, waiting for solution...`);
 
-  // getTaskResult — poll up to 120 seconds
   for (let i = 0; i < 24; i++) {
     await new Promise((r) => setTimeout(r, 5000));
     const res = await axios.post("https://api.2captcha.com/getTaskResult", {
@@ -84,19 +136,6 @@ const UULE_KEY = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
 function generateUule(canonicalName) {
   const b64 = Buffer.from(canonicalName).toString("base64").replace(/=/g, "");
   return "w+CAIQICI" + UULE_KEY[canonicalName.length] + b64;
-}
-
-// ── Decodo Proxy URL ────────────────────────────────────
-function buildProxyUrl() {
-  // Decodo residential proxy — US country targeting via username
-  // Use US-only endpoint (port 10001 = US residential)
-  const encodedUser = encodeURIComponent(DECODO_USER);
-  const encodedPass = encodeURIComponent(DECODO_PASS);
-  return {
-    url: `http://${encodedUser}:${encodedPass}@us.decodo.com:10001`,
-    username: DECODO_USER,
-    password: DECODO_PASS,
-  };
 }
 
 // ── Random helper ───────────────────────────────────────
@@ -129,8 +168,7 @@ async function runJourney(job) {
       }
     : null;
 
-  const proxy = buildProxyUrl();
-  log("proxy_configured", `${proxy.username} → gate.decodo.com:10001`);
+  const proxyConfig = { username: DECODO_USER, password: DECODO_PASS };
 
   // Build Google URL with UULE
   let googleUrl = "https://www.google.com/?gl=us&hl=en";
@@ -141,33 +179,23 @@ async function runJourney(job) {
     log("uule_generated", canonicalName);
   }
 
+  let profileId;
   let browser;
-  let localProxy;
   try {
-    // Use proxy-chain to create a local anonymous proxy
-    // This handles auth so Playwright doesn't have to
-    const localProxy = await proxyChain.anonymizeProxy(proxy.url);
-    log("local_proxy_created", localProxy);
+    // ── GoLogin: create profile with fingerprint + proxy ──
+    profileId = await createGoLoginProfile(mobile, proxyConfig);
+    log("gologin_profile_created", profileId);
 
-    browser = await chromium.launch({
-      headless: false,
-      proxy: {
-        server: localProxy,
-      },
-    });
-    log("browser_launched");
+    // ── GoLogin: start cloud browser and get websocket URL ──
+    const wsUrl = await startGoLoginProfile(profileId);
+    log("gologin_browser_started", `ws: ${wsUrl.slice(0, 60)}...`);
 
-    const context = await browser.newContext({
-      viewport: mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 },
-      userAgent: mobile
-        ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-      locale: "en-US",
-      timezoneId: "America/Chicago",
-    });
-    const page = await context.newPage();
+    // ── Playwright: connect via CDP ──
+    browser = await chromium.connectOverCDP(wsUrl);
+    log("playwright_connected");
 
-    // No route blocking needed — we solve captcha via HTTP, not in-browser
+    const context = browser.contexts()[0] || await browser.newContext();
+    const page = context.pages()[0] || await context.newPage();
 
     // Go to Google
     await page.goto(googleUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
@@ -178,7 +206,6 @@ async function runJourney(job) {
     if (page.url().includes("/sorry/") || page.url().includes("captcha")) {
       log("captcha_detected", "Solving with 2Captcha...");
       try {
-        // Extract siteKey, data-s, and cookies from the captcha page
         const captchaInfo = await page.evaluate(() => {
           const el = document.querySelector('[data-sitekey]') || document.querySelector('.g-recaptcha');
           if (!el) return null;
@@ -189,29 +216,22 @@ async function runJourney(job) {
         });
         if (!captchaInfo || !captchaInfo.siteKey) throw new Error("Could not find reCAPTCHA sitekey on page");
         
-        // Get cookies for 2Captcha (important for Google)
         const browserCookies = await context.cookies();
         const cookieStr = browserCookies.map(c => `${c.name}=${c.value}`).join("; ");
         
         log("captcha_sitekey", `key=${captchaInfo.siteKey.slice(0,20)}... data-s=${captchaInfo.dataS ? 'yes' : 'no'} cookies=${browserCookies.length}`);
 
-        // Pass proxy info so 2Captcha solves from same IP (critical for Google)
         const proxyInfo = { host: "gate.decodo.com", port: 10001, username: DECODO_USER, password: DECODO_PASS };
-        const ua = mobile
-          ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"
-          : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36";
+        const ua = await page.evaluate(() => navigator.userAgent);
 
         const token = await solveRecaptcha(page.url(), captchaInfo.siteKey, captchaInfo.dataS, proxyInfo, cookieStr, ua);
         log("captcha_solved", `token=${token.slice(0,30)}...`);
 
-        // Inject the token and submit the form
         await page.evaluate((tok) => {
-          // Set token in all possible fields
           const resp = document.getElementById('g-recaptcha-response');
           if (resp) resp.value = tok;
           const ta = document.querySelector('textarea[name="g-recaptcha-response"]');
           if (ta) ta.value = tok;
-          // Submit the captcha form
           const form = document.getElementById('captcha-form') || document.querySelector('form');
           if (form) form.submit();
         }, token);
@@ -219,9 +239,8 @@ async function runJourney(job) {
         await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
         log("captcha_submitted", `now at: ${page.url()}`);
 
-        // If still on sorry page, captcha failed
         if (page.url().includes("/sorry/")) {
-          log("captcha_failed", "Still on sorry page after solve — data-s may have expired");
+          log("captcha_failed", "Still on sorry page after solve");
           return { success: false, found: false, captcha: true, steps, error: "Captcha solved but still blocked", duration_ms: Date.now() - startTime };
         }
         log("captcha_bypassed", "Successfully passed captcha!");
@@ -260,7 +279,6 @@ async function runJourney(job) {
       await page.waitForSelector("#search, #rso, .g", { timeout: 15000 });
       log("results_rendered");
     } catch {
-      // Check for captcha again after search — solve it
       if (page.url().includes("/sorry/")) {
         log("captcha_after_search", "Solving with 2Captcha...");
         try {
@@ -274,9 +292,7 @@ async function runJourney(job) {
           const browserCookies = await context.cookies();
           const cookieStr = browserCookies.map(c => `${c.name}=${c.value}`).join("; ");
           const proxyInfo = { host: "gate.decodo.com", port: 10001, username: DECODO_USER, password: DECODO_PASS };
-          const ua = mobile
-            ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"
-            : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36";
+          const ua = await page.evaluate(() => navigator.userAgent);
 
           const token = await solveRecaptcha(page.url(), captchaInfo.siteKey, captchaInfo.dataS, proxyInfo, cookieStr, ua);
           log("captcha_solved_post_search", `token=${token.slice(0,30)}...`);
@@ -418,8 +434,12 @@ async function runJourney(job) {
     return { success: false, found: false, steps, error: err.message, duration_ms: Date.now() - startTime };
   } finally {
     if (browser) await browser.close().catch(() => {});
-    // Clean up proxy-chain
-    try { await proxyChain.closeAnonymizedProxy(localProxy, true); } catch {}
+    // Cleanup GoLogin profile
+    if (profileId) {
+      await stopGoLoginProfile(profileId);
+      await deleteGoLoginProfile(profileId);
+      console.log(`  🧹 GoLogin profile ${profileId} cleaned up`);
+    }
   }
 }
 
@@ -428,23 +448,20 @@ async function processJob(job) {
   const jobId = job.id;
   console.log(`\n🦑 Processing job ${jobId} — ${job.params?.keyword || "no keyword"}`);
 
-  // Mark as running
   await supabase
     .from("jobs")
     .update({ status: "running", started_at: new Date().toISOString() })
     .eq("id", jobId);
 
-  // Retry up to 5 times with fresh IPs on CAPTCHA
+  // Retry up to 5 times with fresh profiles on CAPTCHA
   let result;
   for (let attempt = 1; attempt <= 5; attempt++) {
-    if (attempt > 1) console.log(`  🔄 Retry #${attempt} with fresh IP...`);
+    if (attempt > 1) console.log(`  🔄 Retry #${attempt} with fresh GoLogin profile + IP...`);
     result = await runJourney(job);
-    if (!result.captcha) break; // Success or non-captcha failure
-    // Wait a bit before retry
+    if (!result.captcha) break;
     await new Promise(r => setTimeout(r, rand(2000, 5000)));
   }
 
-  // Save result
   await supabase
     .from("jobs")
     .update({
@@ -455,7 +472,6 @@ async function processJob(job) {
     })
     .eq("id", jobId);
 
-  // Save execution logs
   for (let i = 0; i < result.steps.length; i++) {
     const step = result.steps[i];
     await supabase.from("execution_logs").insert({
@@ -501,11 +517,24 @@ async function poll() {
 // ── Main ────────────────────────────────────────────────
 async function main() {
   console.log("╔══════════════════════════════════════╗");
-  console.log("║   🦑 NirvanaTraffic Worker v1.0      ║");
-  console.log("║   VPS: Mediumbox-VM                  ║");
-  console.log("║   Proxy: Decodo Residential           ║");
+  console.log("║   🦑 NirvanaTraffic Worker v2.0      ║");
+  console.log("║   🎭 GoLogin Fingerprinting           ║");
+  console.log("║   🌐 Decodo Residential Proxies       ║");
   console.log("║   Polling every " + (POLL_INTERVAL / 1000) + "s                 ║");
   console.log("╚══════════════════════════════════════╝\n");
+
+  // Validate GoLogin token
+  if (!GOLOGIN_TOKEN) {
+    console.error("❌ GOLOGIN_TOKEN not set in .env");
+    process.exit(1);
+  }
+  try {
+    const glUser = await axios.get(`${GL_API}/user`, { headers: GL_HEADERS });
+    console.log(`✅ GoLogin: ${glUser.data.email} (${glUser.data.plan?.name || 'unknown'} plan)`);
+  } catch (err) {
+    console.error("❌ GoLogin token invalid:", err.message);
+    process.exit(1);
+  }
 
   // Test Supabase connection
   const { count, error } = await supabase.from("jobs").select("*", { count: "exact", head: true });
@@ -516,9 +545,8 @@ async function main() {
   console.log(`✅ Connected to Supabase — ${count} total jobs in queue`);
   console.log("👀 Watching for queued jobs...\n");
 
-  // Start polling
   setInterval(poll, POLL_INTERVAL);
-  poll(); // Run immediately on start
+  poll();
 }
 
 main().catch((err) => {
