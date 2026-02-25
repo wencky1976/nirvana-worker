@@ -85,7 +85,7 @@ async function createGoLoginProfile(mobile, proxyConfig) {
 
 async function launchGoLoginBrowser(profileId) {
   // Use GoLogin SDK to launch Orbita browser locally with full fingerprinting
-  const { GologinApi } = require('gologin');
+  const { GologinApi } = await import('gologin');
   const GL = GologinApi({ token: GOLOGIN_TOKEN });
   
   console.log(`  🌐 Launching GoLogin Orbita browser locally...`);
@@ -207,39 +207,36 @@ async function runJourney(job) {
     glApi = result.GL;
     log("gologin_browser_launched");
 
-    // ── Get page from GoLogin's browser ──
-    const context = browser.contexts()[0] || await browser.newContext();
-    const page = context.pages()[0] || await context.newPage();
+    // ── Get page from GoLogin's browser (Puppeteer-style API) ──
+    const pages = await browser.pages();
+    const page = pages.length > 0 ? pages[0] : await browser.newPage();
+
+    // Helper: wait ms (Puppeteer-compatible)
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
     // Go to Google
     await page.goto(googleUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
     log("google_loaded");
-    await page.waitForTimeout(rand(800, 1500));
+    await wait(rand(800, 1500));
 
-    // Check for captcha — solve with 2Captcha
+    // Check for captcha
     if (page.url().includes("/sorry/") || page.url().includes("captcha")) {
       log("captcha_detected", "Solving with 2Captcha...");
       try {
         const captchaInfo = await page.evaluate(() => {
           const el = document.querySelector('[data-sitekey]') || document.querySelector('.g-recaptcha');
           if (!el) return null;
-          return {
-            siteKey: el.getAttribute('data-sitekey'),
-            dataS: el.getAttribute('data-s') || '',
-          };
+          return { siteKey: el.getAttribute('data-sitekey'), dataS: el.getAttribute('data-s') || '' };
         });
-        if (!captchaInfo || !captchaInfo.siteKey) throw new Error("Could not find reCAPTCHA sitekey on page");
-        
-        const browserCookies = await context.cookies();
-        const cookieStr = browserCookies.map(c => `${c.name}=${c.value}`).join("; ");
-        
-        log("captcha_sitekey", `key=${captchaInfo.siteKey.slice(0,20)}... data-s=${captchaInfo.dataS ? 'yes' : 'no'} cookies=${browserCookies.length}`);
+        if (!captchaInfo || !captchaInfo.siteKey) throw new Error("Could not find reCAPTCHA sitekey");
 
+        const browserCookies = await page.cookies();
+        const cookieStr = browserCookies.map(c => `${c.name}=${c.value}`).join("; ");
         const proxyInfo = { host: "gate.decodo.com", port: 10001, username: DECODO_USER, password: DECODO_PASS };
         const ua = await page.evaluate(() => navigator.userAgent);
 
         const token = await solveRecaptcha(page.url(), captchaInfo.siteKey, captchaInfo.dataS, proxyInfo, cookieStr, ua);
-        log("captcha_solved", `token=${token.slice(0,30)}...`);
+        log("captcha_solved");
 
         await page.evaluate((tok) => {
           const resp = document.getElementById('g-recaptcha-response');
@@ -250,42 +247,38 @@ async function runJourney(job) {
           if (form) form.submit();
         }, token);
 
-        await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
-        log("captcha_submitted", `now at: ${page.url()}`);
-
+        await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
         if (page.url().includes("/sorry/")) {
-          log("captcha_failed", "Still on sorry page after solve");
-          return { success: false, found: false, captcha: true, steps, error: "Captcha solved but still blocked", duration_ms: Date.now() - startTime };
+          return { success: false, found: false, captcha: true, steps, error: "Captcha bypass failed", duration_ms: Date.now() - startTime };
         }
-        log("captcha_bypassed", "Successfully passed captcha!");
+        log("captcha_bypassed");
       } catch (err) {
-        log("captcha_solve_error", err.message);
-        return { success: false, found: false, captcha: true, steps, error: "Captcha solve failed: " + err.message, duration_ms: Date.now() - startTime };
+        log("captcha_error", err.message);
+        return { success: false, found: false, captcha: true, steps, error: err.message, duration_ms: Date.now() - startTime };
       }
     }
 
     // Cookie consent
     try {
-      const btn = page.locator('button:has-text("Accept all"), button:has-text("Accept"), #L2AGLb');
-      if (await btn.first().isVisible({ timeout: 2000 })) {
-        await btn.first().click();
-        log("cookie_accepted");
-      }
+      const btn = await page.$('#L2AGLb, button[aria-label="Accept all"]');
+      if (btn) { await btn.click(); log("cookie_accepted"); }
     } catch { /* ok */ }
 
     // Type keyword humanly
-    const input = page.locator('textarea[name="q"], input[name="q"]').first();
-    await input.click();
-    await page.waitForTimeout(rand(300, 600));
-    for (const c of keyword) {
-      await page.keyboard.type(c, { delay: rand(50, 180) });
-      if (Math.random() < 0.1) await page.waitForTimeout(rand(200, 500));
+    const input = await page.$('textarea[name="q"], input[name="q"]');
+    if (input) {
+      await input.click();
+      await wait(rand(300, 600));
+      for (const c of keyword) {
+        await page.keyboard.type(c, { delay: rand(50, 180) });
+        if (Math.random() < 0.1) await wait(rand(200, 500));
+      }
     }
     log("keyword_typed", keyword);
 
     // Search
     await page.keyboard.press("Enter");
-    await page.waitForLoadState("domcontentloaded");
+    await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
     log("search_submitted");
 
     // Wait for results
@@ -294,49 +287,18 @@ async function runJourney(job) {
       log("results_rendered");
     } catch {
       if (page.url().includes("/sorry/")) {
-        log("captcha_after_search", "Solving with 2Captcha...");
-        try {
-          const captchaInfo = await page.evaluate(() => {
-            const el = document.querySelector('[data-sitekey]') || document.querySelector('.g-recaptcha');
-            if (!el) return null;
-            return { siteKey: el.getAttribute('data-sitekey'), dataS: el.getAttribute('data-s') || '' };
-          });
-          if (!captchaInfo || !captchaInfo.siteKey) throw new Error("No reCAPTCHA sitekey found");
-
-          const browserCookies = await context.cookies();
-          const cookieStr = browserCookies.map(c => `${c.name}=${c.value}`).join("; ");
-          const proxyInfo = { host: "gate.decodo.com", port: 10001, username: DECODO_USER, password: DECODO_PASS };
-          const ua = await page.evaluate(() => navigator.userAgent);
-
-          const token = await solveRecaptcha(page.url(), captchaInfo.siteKey, captchaInfo.dataS, proxyInfo, cookieStr, ua);
-          log("captcha_solved_post_search", `token=${token.slice(0,30)}...`);
-
-          await page.evaluate((tok) => {
-            const resp = document.getElementById('g-recaptcha-response');
-            if (resp) resp.value = tok;
-            const ta = document.querySelector('textarea[name="g-recaptcha-response"]');
-            if (ta) ta.value = tok;
-            const form = document.getElementById('captcha-form') || document.querySelector('form');
-            if (form) form.submit();
-          }, token);
-
-          await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
-          await page.waitForSelector("#search, #rso, .g", { timeout: 15000 });
-          log("captcha_bypassed", "Search results loaded after captcha solve");
-        } catch (err) {
-          log("captcha_solve_error_post", err.message);
-          return { success: false, found: false, captcha: true, steps, error: "Post-search captcha failed: " + err.message, duration_ms: Date.now() - startTime };
-        }
+        log("captcha_after_search");
+        return { success: false, found: false, captcha: true, steps, error: "Captcha after search", duration_ms: Date.now() - startTime };
       }
     }
-    await page.waitForTimeout(rand(1500, 3000));
+    await wait(rand(1500, 3000));
 
     // Light scroll
-    await page.mouse.wheel(0, rand(200, 400));
-    await page.waitForTimeout(rand(800, 1500));
+    await page.evaluate(() => window.scrollBy(0, Math.random() * 400 + 200));
+    await wait(rand(800, 1500));
     log("scrolled_results");
 
-    // ── Smart target matching ───────────────────────────
+    // ── Smart target matching (Puppeteer-style) ─────────
     const bizLow = targetBusiness.toLowerCase();
     const bizWords = bizLow.split(/\s+/).filter((w) => w.length > 1);
     const urlLow = (targetUrl || "").toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
@@ -355,91 +317,105 @@ async function runJourney(job) {
       return score;
     };
 
+    // Find and click target using page.evaluate for all matching
+    const matchResult = await page.evaluate((bizLow, bizWords, urlLow) => {
+      const scoreMatch = (text, href) => {
+        const t = text.toLowerCase();
+        const h = href.toLowerCase();
+        let score = 0;
+        if (t.includes(bizLow)) score += 100;
+        if (urlLow && h.includes(urlLow)) score += 90;
+        if (urlLow && t.includes(urlLow)) score += 80;
+        const wordsFound = bizWords.filter(w => t.includes(w)).length;
+        const wordRatio = bizWords.length > 0 ? wordsFound / bizWords.length : 0;
+        if (wordRatio >= 0.75) score += 70;
+        else if (wordRatio >= 0.5) score += 40;
+        return score;
+      };
+
+      // Maps/Local Pack
+      const mapsEls = document.querySelectorAll('[data-local-attribute="d3bn"] a, .VkpGBb a, div.rllt__details a, a[data-cid]');
+      for (let i = 0; i < mapsEls.length; i++) {
+        const txt = mapsEls[i].textContent || "";
+        const href = mapsEls[i].href || "";
+        if (scoreMatch(txt, href) >= 50) {
+          return { type: "maps", index: i, rank: i + 1, text: txt.slice(0, 100), selector: `[data-cid]:nth-of-type(${i+1}) a, .VkpGBb a` };
+        }
+      }
+
+      // Organic H3 results
+      const h3s = document.querySelectorAll("#search a h3, #rso a h3");
+      for (let i = 0; i < h3s.length; i++) {
+        const link = h3s[i].closest("a");
+        if (!link) continue;
+        const txt = h3s[i].textContent || "";
+        const href = link.href || "";
+        if (scoreMatch(txt, href) >= 50) {
+          return { type: "organic", index: i, rank: i + 1, text: txt.slice(0, 100), href };
+        }
+      }
+
+      // Broad scan
+      const allLinks = document.querySelectorAll("#search a[href]");
+      for (let i = 0; i < allLinks.length; i++) {
+        const txt = allLinks[i].textContent || "";
+        const href = allLinks[i].href || "";
+        if (txt.trim().length < 3) continue;
+        if (scoreMatch(txt, href) >= 50) {
+          return { type: "broad", index: i, rank: i + 1, text: txt.slice(0, 100), href };
+        }
+      }
+
+      return null;
+    }, bizLow, bizWords, urlLow);
+
     let found = false;
     let clickedRank = 0;
 
-    // Strategy 1: Maps/Local Pack
-    const mapsPack = page.locator(
-      '[data-local-attribute="d3bn"], .VkpGBb, [jscontroller="AtSb"] a, div.rllt__details a, a[data-cid]'
-    );
-    const mapsCount = await mapsPack.count();
-    if (mapsCount > 0) {
-      log("maps_pack_found", `${mapsCount} local results`);
-      for (let i = 0; i < mapsCount; i++) {
-        const el = mapsPack.nth(i);
-        const txt = (await el.textContent()) || "";
-        const href = (await el.getAttribute("href")) || "";
-        const score = scoreMatch(txt, href);
-        if (score >= 50) {
-          await el.scrollIntoViewIfNeeded();
-          await page.waitForTimeout(rand(500, 1200));
+    if (matchResult) {
+      // Click the found target
+      log(`${matchResult.type}_target_found`, `pos ${matchResult.rank}: ${matchResult.text}`);
+      
+      if (matchResult.type === "organic" || matchResult.type === "broad") {
+        // Click by navigating to href directly after scrolling
+        const h3s = await page.$$(`${matchResult.type === "organic" ? "#search a h3, #rso a h3" : "#search a[href]"}`);
+        if (h3s[matchResult.index]) {
+          const el = matchResult.type === "organic" ? (await h3s[matchResult.index].$x("ancestor::a"))[0] || h3s[matchResult.index] : h3s[matchResult.index];
+          await el.evaluate(e => e.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+          await wait(rand(500, 1200));
           await el.click();
           found = true;
-          clickedRank = i + 1;
-          log("maps_target_clicked", `Maps pos ${i + 1} (score:${score}): ${txt.slice(0, 100)}`);
-          break;
+          clickedRank = matchResult.rank;
+          log("target_clicked", `${matchResult.type} pos ${matchResult.rank}`);
         }
-      }
-    }
-
-    // Strategy 2: Organic results
-    if (!found) {
-      const organicResults = page.locator("#search a h3, #rso a h3");
-      const orgCount = await organicResults.count();
-      log("organic_results", `${orgCount} organic results`);
-      for (let i = 0; i < orgCount; i++) {
-        const h3 = organicResults.nth(i);
-        const parentLink = h3.locator("xpath=ancestor::a");
-        const txt = (await h3.textContent()) || "";
-        const href = (await parentLink.getAttribute("href").catch(() => "")) || "";
-        const score = scoreMatch(txt, href);
-        if (score >= 50) {
-          await parentLink.scrollIntoViewIfNeeded();
-          await page.waitForTimeout(rand(500, 1200));
-          await parentLink.click();
+      } else {
+        // Maps click
+        const mapsEls = await page.$$('[data-cid] a, .VkpGBb a, div.rllt__details a');
+        if (mapsEls[matchResult.index]) {
+          await mapsEls[matchResult.index].evaluate(e => e.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+          await wait(rand(500, 1200));
+          await mapsEls[matchResult.index].click();
           found = true;
-          clickedRank = i + 1;
-          log("organic_target_clicked", `Organic pos ${i + 1} (score:${score}): ${txt.slice(0, 100)}`);
-          break;
-        }
-      }
-    }
-
-    // Strategy 3: Broad scan
-    if (!found) {
-      const allLinks = await page.locator("#search a[href]").all();
-      for (let i = 0; i < allLinks.length; i++) {
-        const txt = (await allLinks[i].textContent()) || "";
-        const href = (await allLinks[i].getAttribute("href")) || "";
-        if (txt.trim().length < 3) continue;
-        const score = scoreMatch(txt, href);
-        if (score >= 50) {
-          await allLinks[i].scrollIntoViewIfNeeded();
-          await page.waitForTimeout(rand(500, 1200));
-          await allLinks[i].click();
-          found = true;
-          clickedRank = i + 1;
-          log("broad_target_clicked", `Broad pos ${i + 1} (score:${score}): ${txt.slice(0, 100)}`);
-          break;
+          clickedRank = matchResult.rank;
+          log("maps_target_clicked", `pos ${matchResult.rank}`);
         }
       }
     }
 
     if (!found) {
       const pageTitle = await page.title().catch(() => "unknown");
-      const snippet = await page.locator("#search, #rso, body").first().textContent().catch(() => "");
-      log("target_not_found", `"${targetBusiness}" not found. Title: "${pageTitle}" Snippet: ${(snippet || "").slice(0, 300)}`);
+      log("target_not_found", `"${targetBusiness}" not in results. Title: "${pageTitle}"`);
       return { success: true, found: false, clickedRank: 0, steps, duration_ms: Date.now() - startTime };
     }
 
     // Dwell on target page
-    await page.waitForLoadState("domcontentloaded").catch(() => {});
+    await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
     log("dwelling", `${Math.round(dwellTimeMs / 1000)}s`);
     for (let i = 0; i < Math.floor(dwellTimeMs / 5000); i++) {
-      await page.waitForTimeout(rand(3000, 6000));
-      await page.mouse.wheel(0, rand(150, 400));
+      await wait(rand(3000, 6000));
+      await page.evaluate(() => window.scrollBy(0, Math.random() * 400 + 150));
     }
-    await page.waitForTimeout(rand(2000, 5000));
+    await wait(rand(2000, 5000));
     log("dwell_complete");
 
     return { success: true, found: true, clickedRank, steps, duration_ms: Date.now() - startTime };
