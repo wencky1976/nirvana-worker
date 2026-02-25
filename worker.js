@@ -223,8 +223,18 @@ async function runJourney(job) {
     // Go to Google
     await page.goto(googleUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
     log("google_loaded");
-    await page.waitForTimeout(rand(1500, 3000));
+    await page.waitForTimeout(rand(2000, 4000));
     
+    // Dismiss any popups (Chrome promo, cookie consent, etc.)
+    try {
+      const notInterested = page.locator('button:has-text("Not interested"), button:has-text("No thanks"), button:has-text("Dismiss")');
+      if (await notInterested.first().isVisible({ timeout: 2000 })) {
+        await notInterested.first().click();
+        log("popup_dismissed", "Chrome promo");
+        await page.waitForTimeout(rand(500, 1000));
+      }
+    } catch { /* ok */ }
+
     // Random mouse movement on page (human behavior)
     await page.mouse.move(rand(200, 800), rand(200, 500));
     await page.waitForTimeout(rand(500, 1000));
