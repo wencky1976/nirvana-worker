@@ -83,21 +83,16 @@ async function createGoLoginProfile(mobile, proxyConfig) {
   }
 }
 
-async function startGoLoginProfile(profileId) {
-  // Start cloud browser — returns status + remoteOrbitaUrl
-  await axios.post(
-    `${GL_API}/browser/${profileId}/web`,
-    { isNewRecovery: true },
-    { headers: GL_HEADERS }
-  );
-  // Connect via the documented websocket URL format
-  return `wss://cloudbrowser.gologin.com/connect?token=${GOLOGIN_TOKEN}&profile=${profileId}`;
-}
-
-async function stopGoLoginProfile(profileId) {
-  try {
-    await axios.delete(`${GL_API}/browser/${profileId}/web`, { headers: GL_HEADERS });
-  } catch { /* ok — profile may already be stopped */ }
+async function launchGoLoginBrowser(profileId) {
+  // Use GoLogin SDK to launch Orbita browser locally with full fingerprinting
+  const { GologinApi } = require('gologin');
+  const GL = GologinApi({ token: GOLOGIN_TOKEN });
+  
+  console.log(`  🌐 Launching GoLogin Orbita browser locally...`);
+  const browser = await GL.launch({ profileId });
+  console.log(`  🌐 Browser launched!`);
+  
+  return { browser, GL };
 }
 
 async function deleteGoLoginProfile(profileId) {
@@ -200,19 +195,19 @@ async function runJourney(job) {
 
   let profileId;
   let browser;
+  let glApi;
   try {
     // ── GoLogin: create profile with fingerprint + proxy ──
     profileId = await createGoLoginProfile(mobile, proxyConfig);
     log("gologin_profile_created", profileId);
 
-    // ── GoLogin: start cloud browser and get websocket URL ──
-    const wsUrl = await startGoLoginProfile(profileId);
-    log("gologin_browser_started", `ws: ${wsUrl.slice(0, 60)}...`);
+    // ── GoLogin: launch Orbita browser locally ──
+    const result = await launchGoLoginBrowser(profileId);
+    browser = result.browser;
+    glApi = result.GL;
+    log("gologin_browser_launched");
 
-    // ── Playwright: connect via CDP ──
-    browser = await chromium.connectOverCDP(wsUrl);
-    log("playwright_connected");
-
+    // ── Get page from GoLogin's browser ──
     const context = browser.contexts()[0] || await browser.newContext();
     const page = context.pages()[0] || await context.newPage();
 
@@ -454,9 +449,9 @@ async function runJourney(job) {
     return { success: false, found: false, steps, error: errDetail, duration_ms: Date.now() - startTime };
   } finally {
     if (browser) await browser.close().catch(() => {});
+    if (glApi) await glApi.stop().catch(() => {});
     // Cleanup GoLogin profile
     if (profileId) {
-      await stopGoLoginProfile(profileId);
       await deleteGoLoginProfile(profileId);
       console.log(`  🧹 GoLogin profile ${profileId} cleaned up`);
     }

@@ -8,8 +8,9 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
-    "playwright": "^1.41.0",
+    "axios": "^1.6.0",
     "dotenv": "^16.3.1",
-    "axios": "^1.6.0"
+    "gologin": "^2.2.7",
+    "playwright": "^1.41.0"
   }
 }
