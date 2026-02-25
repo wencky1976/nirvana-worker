@@ -17,7 +17,6 @@
 
 require("dotenv").config();
 const { createClient } = require("@supabase/supabase-js");
-const { chromium } = require("playwright");
 const axios = require("axios");
 
 // ── Config ──────────────────────────────────────────────
@@ -84,15 +83,27 @@ async function createGoLoginProfile(mobile, proxyConfig) {
 }
 
 async function launchGoLoginBrowser(profileId) {
-  // Use GoLogin SDK to launch Orbita browser locally with full fingerprinting
+  // Use GoLogin SDK to launch Orbita, then connect Playwright via CDP
   const { GologinApi } = await import('gologin');
+  const { chromium } = require('playwright');
   const GL = GologinApi({ token: GOLOGIN_TOKEN });
   
   console.log(`  🌐 Launching GoLogin Orbita browser locally...`);
-  const browser = await GL.launch({ profileId });
-  console.log(`  🌐 Browser launched!`);
+  const puppBrowser = await GL.launch({ profileId });
   
-  return { browser, GL };
+  // Get the CDP endpoint from Puppeteer browser
+  const wsEndpoint = puppBrowser.wsEndpoint();
+  console.log(`  🌐 Orbita running at: ${wsEndpoint}`);
+  
+  // Extract the debug port from the ws endpoint
+  const debugPort = new URL(wsEndpoint).port;
+  console.log(`  🎭 Connecting Playwright via CDP on port ${debugPort}...`);
+  
+  // Connect Playwright over CDP
+  const browser = await chromium.connectOverCDP(`http://localhost:${debugPort}`);
+  console.log(`  🎭 Playwright connected!`);
+  
+  return { browser, puppBrowser, GL };
 }
 
 async function deleteGoLoginProfile(profileId) {
@@ -195,29 +206,28 @@ async function runJourney(job) {
 
   let profileId;
   let browser;
+  let puppBrowser;
   let glApi;
   try {
     // ── GoLogin: create profile with fingerprint + proxy ──
     profileId = await createGoLoginProfile(mobile, proxyConfig);
     log("gologin_profile_created", profileId);
 
-    // ── GoLogin: launch Orbita browser locally ──
+    // ── GoLogin: launch Orbita + connect Playwright via CDP ──
     const result = await launchGoLoginBrowser(profileId);
     browser = result.browser;
+    puppBrowser = result.puppBrowser;
     glApi = result.GL;
     log("gologin_browser_launched");
 
-    // ── Get page from GoLogin's browser (Puppeteer-style API) ──
-    const pages = await browser.pages();
-    const page = pages.length > 0 ? pages[0] : await browser.newPage();
-
-    // Helper: wait ms (Puppeteer-compatible)
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    // ── Playwright: get page ──
+    const context = browser.contexts()[0] || await browser.newContext();
+    const page = context.pages()[0] || await context.newPage();
 
     // Go to Google
     await page.goto(googleUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
     log("google_loaded");
-    await wait(rand(800, 1500));
+    await page.waitForTimeout(rand(800, 1500));
 
     // Check for captcha
     if (page.url().includes("/sorry/") || page.url().includes("captcha")) {
@@ -230,7 +240,7 @@ async function runJourney(job) {
         });
         if (!captchaInfo || !captchaInfo.siteKey) throw new Error("Could not find reCAPTCHA sitekey");
 
-        const browserCookies = await page.cookies();
+        const browserCookies = await context.cookies();
         const cookieStr = browserCookies.map(c => `${c.name}=${c.value}`).join("; ");
         const proxyInfo = { host: "gate.decodo.com", port: 10001, username: DECODO_USER, password: DECODO_PASS };
         const ua = await page.evaluate(() => navigator.userAgent);
@@ -247,7 +257,7 @@ async function runJourney(job) {
           if (form) form.submit();
         }, token);
 
-        await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
+        await page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
         if (page.url().includes("/sorry/")) {
           return { success: false, found: false, captcha: true, steps, error: "Captcha bypass failed", duration_ms: Date.now() - startTime };
         }
@@ -260,25 +270,26 @@ async function runJourney(job) {
 
     // Cookie consent
     try {
-      const btn = await page.$('#L2AGLb, button[aria-label="Accept all"]');
-      if (btn) { await btn.click(); log("cookie_accepted"); }
+      const btn = page.locator('#L2AGLb, button:has-text("Accept all"), button:has-text("Accept")');
+      if (await btn.first().isVisible({ timeout: 2000 })) {
+        await btn.first().click();
+        log("cookie_accepted");
+      }
     } catch { /* ok */ }
 
     // Type keyword humanly
-    const input = await page.$('textarea[name="q"], input[name="q"]');
-    if (input) {
-      await input.click();
-      await wait(rand(300, 600));
-      for (const c of keyword) {
-        await page.keyboard.type(c, { delay: rand(50, 180) });
-        if (Math.random() < 0.1) await wait(rand(200, 500));
-      }
+    const input = page.locator('textarea[name="q"], input[name="q"]').first();
+    await input.click();
+    await page.waitForTimeout(rand(300, 600));
+    for (const c of keyword) {
+      await page.keyboard.type(c, { delay: rand(50, 180) });
+      if (Math.random() < 0.1) await page.waitForTimeout(rand(200, 500));
     }
     log("keyword_typed", keyword);
 
     // Search
     await page.keyboard.press("Enter");
-    await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+    await page.waitForLoadState("domcontentloaded");
     log("search_submitted");
 
     // Wait for results
@@ -291,14 +302,14 @@ async function runJourney(job) {
         return { success: false, found: false, captcha: true, steps, error: "Captcha after search", duration_ms: Date.now() - startTime };
       }
     }
-    await wait(rand(1500, 3000));
+    await page.waitForTimeout(rand(1500, 3000));
 
     // Light scroll
-    await page.evaluate(() => window.scrollBy(0, Math.random() * 400 + 200));
-    await wait(rand(800, 1500));
+    await page.mouse.wheel(0, rand(200, 400));
+    await page.waitForTimeout(rand(800, 1500));
     log("scrolled_results");
 
-    // ── Smart target matching (Puppeteer-style) ─────────
+    // ── Smart target matching ───────────────────────────
     const bizLow = targetBusiness.toLowerCase();
     const bizWords = bizLow.split(/\s+/).filter((w) => w.length > 1);
     const urlLow = (targetUrl || "").toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
@@ -317,105 +328,87 @@ async function runJourney(job) {
       return score;
     };
 
-    // Find and click target using page.evaluate for all matching
-    const matchResult = await page.evaluate((bizLow, bizWords, urlLow) => {
-      const scoreMatch = (text, href) => {
-        const t = text.toLowerCase();
-        const h = href.toLowerCase();
-        let score = 0;
-        if (t.includes(bizLow)) score += 100;
-        if (urlLow && h.includes(urlLow)) score += 90;
-        if (urlLow && t.includes(urlLow)) score += 80;
-        const wordsFound = bizWords.filter(w => t.includes(w)).length;
-        const wordRatio = bizWords.length > 0 ? wordsFound / bizWords.length : 0;
-        if (wordRatio >= 0.75) score += 70;
-        else if (wordRatio >= 0.5) score += 40;
-        return score;
-      };
-
-      // Maps/Local Pack
-      const mapsEls = document.querySelectorAll('[data-local-attribute="d3bn"] a, .VkpGBb a, div.rllt__details a, a[data-cid]');
-      for (let i = 0; i < mapsEls.length; i++) {
-        const txt = mapsEls[i].textContent || "";
-        const href = mapsEls[i].href || "";
-        if (scoreMatch(txt, href) >= 50) {
-          return { type: "maps", index: i, rank: i + 1, text: txt.slice(0, 100), selector: `[data-cid]:nth-of-type(${i+1}) a, .VkpGBb a` };
-        }
-      }
-
-      // Organic H3 results
-      const h3s = document.querySelectorAll("#search a h3, #rso a h3");
-      for (let i = 0; i < h3s.length; i++) {
-        const link = h3s[i].closest("a");
-        if (!link) continue;
-        const txt = h3s[i].textContent || "";
-        const href = link.href || "";
-        if (scoreMatch(txt, href) >= 50) {
-          return { type: "organic", index: i, rank: i + 1, text: txt.slice(0, 100), href };
-        }
-      }
-
-      // Broad scan
-      const allLinks = document.querySelectorAll("#search a[href]");
-      for (let i = 0; i < allLinks.length; i++) {
-        const txt = allLinks[i].textContent || "";
-        const href = allLinks[i].href || "";
-        if (txt.trim().length < 3) continue;
-        if (scoreMatch(txt, href) >= 50) {
-          return { type: "broad", index: i, rank: i + 1, text: txt.slice(0, 100), href };
-        }
-      }
-
-      return null;
-    }, bizLow, bizWords, urlLow);
-
     let found = false;
     let clickedRank = 0;
 
-    if (matchResult) {
-      // Click the found target
-      log(`${matchResult.type}_target_found`, `pos ${matchResult.rank}: ${matchResult.text}`);
-      
-      if (matchResult.type === "organic" || matchResult.type === "broad") {
-        // Click by navigating to href directly after scrolling
-        const h3s = await page.$$(`${matchResult.type === "organic" ? "#search a h3, #rso a h3" : "#search a[href]"}`);
-        if (h3s[matchResult.index]) {
-          const el = matchResult.type === "organic" ? (await h3s[matchResult.index].$x("ancestor::a"))[0] || h3s[matchResult.index] : h3s[matchResult.index];
-          await el.evaluate(e => e.scrollIntoView({ behavior: 'smooth', block: 'center' }));
-          await wait(rand(500, 1200));
+    // Strategy 1: Maps/Local Pack
+    const mapsPack = page.locator('[data-local-attribute="d3bn"] a, .VkpGBb a, div.rllt__details a, a[data-cid]');
+    const mapsCount = await mapsPack.count();
+    if (mapsCount > 0) {
+      log("maps_pack_found", `${mapsCount} local results`);
+      for (let i = 0; i < mapsCount; i++) {
+        const el = mapsPack.nth(i);
+        const txt = (await el.textContent()) || "";
+        const href = (await el.getAttribute("href")) || "";
+        if (scoreMatch(txt, href) >= 50) {
+          await el.scrollIntoViewIfNeeded();
+          await page.waitForTimeout(rand(500, 1200));
           await el.click();
           found = true;
-          clickedRank = matchResult.rank;
-          log("target_clicked", `${matchResult.type} pos ${matchResult.rank}`);
+          clickedRank = i + 1;
+          log("maps_target_clicked", `pos ${i + 1}: ${txt.slice(0, 100)}`);
+          break;
         }
-      } else {
-        // Maps click
-        const mapsEls = await page.$$('[data-cid] a, .VkpGBb a, div.rllt__details a');
-        if (mapsEls[matchResult.index]) {
-          await mapsEls[matchResult.index].evaluate(e => e.scrollIntoView({ behavior: 'smooth', block: 'center' }));
-          await wait(rand(500, 1200));
-          await mapsEls[matchResult.index].click();
+      }
+    }
+
+    // Strategy 2: Organic results
+    if (!found) {
+      const h3s = page.locator("#search a h3, #rso a h3");
+      const orgCount = await h3s.count();
+      log("organic_results", `${orgCount} results`);
+      for (let i = 0; i < orgCount; i++) {
+        const h3 = h3s.nth(i);
+        const link = h3.locator("xpath=ancestor::a");
+        const txt = (await h3.textContent()) || "";
+        const href = (await link.getAttribute("href").catch(() => "")) || "";
+        if (scoreMatch(txt, href) >= 50) {
+          await link.scrollIntoViewIfNeeded();
+          await page.waitForTimeout(rand(500, 1200));
+          await link.click();
           found = true;
-          clickedRank = matchResult.rank;
-          log("maps_target_clicked", `pos ${matchResult.rank}`);
+          clickedRank = i + 1;
+          log("organic_target_clicked", `pos ${i + 1}: ${txt.slice(0, 100)}`);
+          break;
+        }
+      }
+    }
+
+    // Strategy 3: Broad scan
+    if (!found) {
+      const allLinks = page.locator("#search a[href]");
+      const linkCount = await allLinks.count();
+      for (let i = 0; i < linkCount; i++) {
+        const el = allLinks.nth(i);
+        const txt = (await el.textContent()) || "";
+        const href = (await el.getAttribute("href")) || "";
+        if (txt.trim().length < 3) continue;
+        if (scoreMatch(txt, href) >= 50) {
+          await el.scrollIntoViewIfNeeded();
+          await page.waitForTimeout(rand(500, 1200));
+          await el.click();
+          found = true;
+          clickedRank = i + 1;
+          log("broad_target_clicked", `pos ${i + 1}: ${txt.slice(0, 100)}`);
+          break;
         }
       }
     }
 
     if (!found) {
-      const pageTitle = await page.title().catch(() => "unknown");
+      const pageTitle = await page.title();
       log("target_not_found", `"${targetBusiness}" not in results. Title: "${pageTitle}"`);
       return { success: true, found: false, clickedRank: 0, steps, duration_ms: Date.now() - startTime };
     }
 
     // Dwell on target page
-    await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
     log("dwelling", `${Math.round(dwellTimeMs / 1000)}s`);
     for (let i = 0; i < Math.floor(dwellTimeMs / 5000); i++) {
-      await wait(rand(3000, 6000));
-      await page.evaluate(() => window.scrollBy(0, Math.random() * 400 + 150));
+      await page.waitForTimeout(rand(3000, 6000));
+      await page.mouse.wheel(0, rand(150, 400));
     }
-    await wait(rand(2000, 5000));
+    await page.waitForTimeout(rand(2000, 5000));
     log("dwell_complete");
 
     return { success: true, found: true, clickedRank, steps, duration_ms: Date.now() - startTime };
@@ -425,6 +418,7 @@ async function runJourney(job) {
     return { success: false, found: false, steps, error: errDetail, duration_ms: Date.now() - startTime };
   } finally {
     if (browser) await browser.close().catch(() => {});
+    if (puppBrowser) await puppBrowser.close().catch(() => {});
     if (glApi) await glApi.stop().catch(() => {});
     // Cleanup GoLogin profile
     if (profileId) {
