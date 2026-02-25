@@ -38,23 +38,30 @@ let activeJobs = 0;
 
 // ── GoLogin Profile Management ──────────────────────────
 async function createGoLoginProfile(mobile, proxyConfig) {
+  // Fetch a real device fingerprint from GoLogin
+  const os = mobile ? "android" : "win";
+  const fpRes = await axios.get(`${GL_API}/browser/fingerprint?os=${os}`, { headers: GL_HEADERS });
+  const fp = fpRes.data;
+
   const profileData = {
     name: `nirvana-${Date.now()}`,
-    os: "win",
+    os,
+    browserType: "chrome",
     navigator: {
-      userAgent: mobile
-        ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-        : undefined, // Let GoLogin generate a realistic one for desktop
+      userAgent: fp.navigator?.userAgent || (mobile
+        ? "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36"
+        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"),
+      platform: fp.navigator?.platform || (mobile ? "Linux armv81" : "Win32"),
       resolution: mobile ? "390x844" : "1920x1080",
       language: "en-US,en",
     },
-    proxy: {
+    proxy: proxyConfig.username ? {
       mode: "http",
       host: "gate.decodo.com",
       port: 10001,
       username: proxyConfig.username,
       password: proxyConfig.password,
-    },
+    } : { mode: "none" },
     webRTC: {
       mode: "altered",
       enabled: true,
@@ -66,13 +73,14 @@ async function createGoLoginProfile(mobile, proxyConfig) {
 }
 
 async function startGoLoginProfile(profileId) {
-  // Start profile and get debugger websocket URL
-  const res = await axios.post(
+  // Start cloud browser — returns status + remoteOrbitaUrl
+  await axios.post(
     `${GL_API}/browser/${profileId}/web`,
     { isNewRecovery: true },
     { headers: GL_HEADERS }
   );
-  return res.data.wsUrl;
+  // Connect via the documented websocket URL format
+  return `wss://cloudbrowser.gologin.com/connect?token=${GOLOGIN_TOKEN}&profile=${profileId}`;
 }
 
 async function stopGoLoginProfile(profileId) {
