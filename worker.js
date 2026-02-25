@@ -64,18 +64,23 @@ async function createGoLoginProfile(mobile, proxyConfig) {
     },
     proxy: proxyConfig.username ? {
       mode: "http",
-      host: "gate.decodo.com",
-      port: 10001,
-      username: proxyConfig.username,
-      password: proxyConfig.password,
+      host: String(proxyConfig.host || "gate.decodo.com"),
+      port: Number(proxyConfig.port || 10001),
+      username: String(proxyConfig.username),
+      password: String(proxyConfig.password),
     } : { mode: "none" },
-    webRTC: { mode: "altered", enabled: true },
+    webRTC: { mode: "alerted", enabled: true },
   };
 
   console.log(`  🎭 Creating GoLogin profile (proxy: ${proxyConfig.username ? 'yes' : 'none'})...`);
-  const res = await axios.post(`${GL_API}/browser`, profileData, { headers: GL_HEADERS });
-  console.log(`  🎭 Profile created: ${res.data.id}`);
-  return res.data.id;
+  try {
+    const res = await axios.post(`${GL_API}/browser`, profileData, { headers: GL_HEADERS });
+    console.log(`  🎭 Profile created: ${res.data.id}`);
+    return res.data.id;
+  } catch (e) {
+    console.error(`  ❌ GoLogin profile create failed:`, JSON.stringify(e.response?.data || e.message).slice(0,500));
+    throw e;
+  }
 }
 
 async function startGoLoginProfile(profileId) {
