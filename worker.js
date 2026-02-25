@@ -63,7 +63,7 @@ async function createGoLoginProfile(mobile, proxyConfig) {
     },
     proxy: proxyConfig.username ? {
       mode: "http",
-      host: String(proxyConfig.host || "gate.decodo.com"),
+      host: String(proxyConfig.host || "us.decodo.com"),
       port: Number(proxyConfig.port || 10001),
       username: String(proxyConfig.username),
       password: String(proxyConfig.password),
@@ -238,7 +238,7 @@ async function runJourney(job) {
 
         const browserCookies = await context.cookies();
         const cookieStr = browserCookies.map(c => `${c.name}=${c.value}`).join("; ");
-        const proxyInfo = { host: "gate.decodo.com", port: 10001, username: DECODO_USER, password: DECODO_PASS };
+        const proxyInfo = { host: "us.decodo.com", port: 10001, username: DECODO_USER, password: DECODO_PASS };
         const ua = await page.evaluate(() => navigator.userAgent);
 
         const token = await solveRecaptcha(page.url(), captchaInfo.siteKey, captchaInfo.dataS, proxyInfo, cookieStr, ua);
