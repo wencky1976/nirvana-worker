@@ -319,9 +319,41 @@ async function runJourney(job) {
       await page.waitForSelector("#search, #rso, .g", { timeout: 15000 });
       log("results_rendered");
     } catch {
-      if (page.url().includes("/sorry/")) {
-        log("captcha_after_search");
-        return { success: false, found: false, captcha: true, steps, error: "Captcha after search", duration_ms: Date.now() - startTime };
+      if (page.url().includes("/sorry/") || page.url().includes("captcha")) {
+        log("captcha_after_search", "Solving with 2Captcha...");
+        try {
+          const captchaInfo = await page.evaluate(() => {
+            const el = document.querySelector('[data-sitekey]') || document.querySelector('.g-recaptcha');
+            if (!el) return null;
+            return { siteKey: el.getAttribute('data-sitekey'), dataS: el.getAttribute('data-s') || '' };
+          });
+          if (!captchaInfo || !captchaInfo.siteKey) throw new Error("No reCAPTCHA sitekey found on page");
+
+          const browserCookies = await context.cookies();
+          const cookieStr = browserCookies.map(c => `${c.name}=${c.value}`).join("; ");
+          const proxyInfo = { host: "us.decodo.com", port: 10001, username: DECODO_USER, password: DECODO_PASS };
+          const ua = await page.evaluate(() => navigator.userAgent);
+
+          log("captcha_solving", `sitekey: ${captchaInfo.siteKey.slice(0,20)}...`);
+          const token = await solveRecaptcha(page.url(), captchaInfo.siteKey, captchaInfo.dataS, proxyInfo, cookieStr, ua);
+          log("captcha_solved", `token: ${token.slice(0,30)}...`);
+
+          await page.evaluate((tok) => {
+            const resp = document.getElementById('g-recaptcha-response');
+            if (resp) resp.value = tok;
+            const ta = document.querySelector('textarea[name="g-recaptcha-response"]');
+            if (ta) ta.value = tok;
+            const form = document.getElementById('captcha-form') || document.querySelector('form');
+            if (form) form.submit();
+          }, token);
+
+          await page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
+          await page.waitForSelector("#search, #rso, .g", { timeout: 15000 });
+          log("captcha_bypassed", "Search results loaded!");
+        } catch (err) {
+          log("captcha_solve_failed", err.message);
+          return { success: false, found: false, captcha: true, steps, error: "Captcha solve failed: " + err.message, duration_ms: Date.now() - startTime };
+        }
       }
     }
     await page.waitForTimeout(rand(1500, 3000));
