@@ -38,20 +38,27 @@ let activeJobs = 0;
 
 // ── GoLogin Profile Management ──────────────────────────
 async function createGoLoginProfile(mobile, proxyConfig) {
-  // Fetch a real device fingerprint from GoLogin
-  const os = mobile ? "android" : "win";
-  const fpRes = await axios.get(`${GL_API}/browser/fingerprint?os=${os}`, { headers: GL_HEADERS });
-  const fp = fpRes.data;
+  // Try to fetch a real device fingerprint, fallback to defaults
+  let ua, platform;
+  try {
+    const os = mobile ? "android" : "win";
+    const fpRes = await axios.get(`${GL_API}/browser/fingerprint?os=${os}`, { headers: GL_HEADERS });
+    ua = fpRes.data?.navigator?.userAgent;
+    platform = fpRes.data?.navigator?.platform;
+    console.log(`  🎭 Got fingerprint from GoLogin API`);
+  } catch (e) {
+    console.log(`  🎭 Fingerprint fetch failed (${e.message}), using defaults`);
+  }
 
   const profileData = {
     name: `nirvana-${Date.now()}`,
-    os,
+    os: mobile ? "android" : "win",
     browserType: "chrome",
     navigator: {
-      userAgent: fp.navigator?.userAgent || (mobile
-        ? "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36"
-        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"),
-      platform: fp.navigator?.platform || (mobile ? "Linux armv81" : "Win32"),
+      userAgent: ua || (mobile
+        ? "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
+      platform: platform || (mobile ? "Linux armv81" : "Win32"),
       resolution: mobile ? "390x844" : "1920x1080",
       language: "en-US,en",
     },
@@ -62,13 +69,12 @@ async function createGoLoginProfile(mobile, proxyConfig) {
       username: proxyConfig.username,
       password: proxyConfig.password,
     } : { mode: "none" },
-    webRTC: {
-      mode: "altered",
-      enabled: true,
-    },
+    webRTC: { mode: "altered", enabled: true },
   };
 
+  console.log(`  🎭 Creating GoLogin profile (proxy: ${proxyConfig.username ? 'yes' : 'none'})...`);
   const res = await axios.post(`${GL_API}/browser`, profileData, { headers: GL_HEADERS });
+  console.log(`  🎭 Profile created: ${res.data.id}`);
   return res.data.id;
 }
 
@@ -438,8 +444,9 @@ async function runJourney(job) {
 
     return { success: true, found: true, clickedRank, steps, duration_ms: Date.now() - startTime };
   } catch (err) {
-    log("error", err.message);
-    return { success: false, found: false, steps, error: err.message, duration_ms: Date.now() - startTime };
+    const errDetail = err.response?.data ? JSON.stringify(err.response.data).slice(0,200) : err.message;
+    log("error", errDetail);
+    return { success: false, found: false, steps, error: errDetail, duration_ms: Date.now() - startTime };
   } finally {
     if (browser) await browser.close().catch(() => {});
     // Cleanup GoLogin profile
