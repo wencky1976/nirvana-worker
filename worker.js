@@ -220,6 +220,30 @@ async function runJourney(job) {
     const context = browser.contexts()[0] || await browser.newContext();
     const page = context.pages()[0] || await context.newPage();
 
+    // ── Inject warm-up cookies ──
+    try {
+      const cookieData = require("./cookies.json");
+      if (cookieData?.cookies?.length) {
+        // Playwright expects: name, value, domain, path, expires (unix epoch), httpOnly, secure, sameSite
+        const playwrightCookies = cookieData.cookies
+          .filter(c => c.domain && c.name && c.value !== undefined)
+          .map(c => ({
+            name: c.name,
+            value: c.value || "",
+            domain: c.domain,
+            path: c.path || "/",
+            expires: (c.expires && c.expires > 0) ? Math.floor(c.expires) : undefined,
+            httpOnly: !!c.httpOnly,
+            secure: !!c.secure,
+            sameSite: c.sameSite === "None" ? "None" : c.sameSite === "Lax" ? "Lax" : c.sameSite === "Strict" ? "Strict" : "Lax",
+          }));
+        await context.addCookies(playwrightCookies);
+        log("cookies_injected", `${playwrightCookies.length} cookies`);
+      }
+    } catch (e) {
+      log("cookies_inject_warning", e.message);
+    }
+
     // Go to Google
     await page.goto(googleUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
     log("google_loaded");
