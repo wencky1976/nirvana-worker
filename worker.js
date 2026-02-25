@@ -84,26 +84,24 @@ async function createGoLoginProfile(mobile, proxyConfig) {
 
 async function launchGoLoginBrowser(profileId) {
   // Use GoLogin SDK to launch Orbita, then connect Playwright via CDP
-  const { GologinApi } = await import('gologin');
+  const gologin = await import('gologin');
   const { chromium } = require('playwright');
-  const GL = GologinApi({ token: GOLOGIN_TOKEN });
+  const GoLogin = gologin.default || gologin.GoLogin || gologin;
   
-  console.log(`  🌐 Launching GoLogin Orbita browser locally...`);
-  const puppBrowser = await GL.launch({ profileId });
+  // Use low-level GoLogin class to get the debug port
+  const GL = new GoLogin({ token: GOLOGIN_TOKEN, profile_id: profileId });
   
-  // Get the CDP endpoint from Puppeteer browser
-  const wsEndpoint = puppBrowser.wsEndpoint();
-  console.log(`  🌐 Orbita running at: ${wsEndpoint}`);
+  console.log(`  🌐 Starting GoLogin profile...`);
+  const { status, wsUrl } = await GL.start();
+  console.log(`  🌐 Orbita running! Status: ${status}`);
+  console.log(`  🌐 WS URL: ${wsUrl}`);
   
-  // Extract the debug port from the ws endpoint
-  const debugPort = new URL(wsEndpoint).port;
-  console.log(`  🎭 Connecting Playwright via CDP on port ${debugPort}...`);
-  
-  // Connect Playwright over CDP
-  const browser = await chromium.connectOverCDP(`http://localhost:${debugPort}`);
+  // Connect Playwright over CDP using the websocket URL
+  console.log(`  🎭 Connecting Playwright via CDP...`);
+  const browser = await chromium.connectOverCDP(wsUrl, { timeout: 30000 });
   console.log(`  🎭 Playwright connected!`);
   
-  return { browser, puppBrowser, GL };
+  return { browser, GL };
 }
 
 async function deleteGoLoginProfile(profileId) {
@@ -206,7 +204,6 @@ async function runJourney(job) {
 
   let profileId;
   let browser;
-  let puppBrowser;
   let glApi;
   try {
     // ── GoLogin: create profile with fingerprint + proxy ──
@@ -216,7 +213,6 @@ async function runJourney(job) {
     // ── GoLogin: launch Orbita + connect Playwright via CDP ──
     const result = await launchGoLoginBrowser(profileId);
     browser = result.browser;
-    puppBrowser = result.puppBrowser;
     glApi = result.GL;
     log("gologin_browser_launched");
 
@@ -418,7 +414,6 @@ async function runJourney(job) {
     return { success: false, found: false, steps, error: errDetail, duration_ms: Date.now() - startTime };
   } finally {
     if (browser) await browser.close().catch(() => {});
-    if (puppBrowser) await puppBrowser.close().catch(() => {});
     if (glApi) await glApi.stop().catch(() => {});
     // Cleanup GoLogin profile
     if (profileId) {
