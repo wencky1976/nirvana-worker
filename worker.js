@@ -223,7 +223,11 @@ async function runJourney(job) {
     // Go to Google
     await page.goto(googleUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
     log("google_loaded");
-    await page.waitForTimeout(rand(800, 1500));
+    await page.waitForTimeout(rand(1500, 3000));
+    
+    // Random mouse movement on page (human behavior)
+    await page.mouse.move(rand(200, 800), rand(200, 500));
+    await page.waitForTimeout(rand(500, 1000));
 
     // Check for captcha
     if (page.url().includes("/sorry/") || page.url().includes("captcha")) {
@@ -273,17 +277,29 @@ async function runJourney(job) {
       }
     } catch { /* ok */ }
 
-    // Type keyword humanly
+    // Type keyword humanly — slow, with pauses and mistakes
     const input = page.locator('textarea[name="q"], input[name="q"]').first();
     await input.click();
-    await page.waitForTimeout(rand(300, 600));
-    for (const c of keyword) {
-      await page.keyboard.type(c, { delay: rand(50, 180) });
-      if (Math.random() < 0.1) await page.waitForTimeout(rand(200, 500));
+    await page.waitForTimeout(rand(500, 1200));
+    for (let i = 0; i < keyword.length; i++) {
+      const c = keyword[i];
+      // Occasional typo + correction (5% chance)
+      if (Math.random() < 0.05 && i > 2) {
+        const wrongKey = String.fromCharCode(c.charCodeAt(0) + (Math.random() > 0.5 ? 1 : -1));
+        await page.keyboard.type(wrongKey, { delay: rand(80, 200) });
+        await page.waitForTimeout(rand(200, 600));
+        await page.keyboard.press("Backspace");
+        await page.waitForTimeout(rand(100, 400));
+      }
+      await page.keyboard.type(c, { delay: rand(80, 250) });
+      // Random pauses between words or mid-word
+      if (c === ' ') await page.waitForTimeout(rand(300, 800));
+      else if (Math.random() < 0.15) await page.waitForTimeout(rand(150, 600));
     }
     log("keyword_typed", keyword);
 
-    // Search
+    // Pause before searching (humans don't instantly hit enter)
+    await page.waitForTimeout(rand(800, 2000));
     await page.keyboard.press("Enter");
     await page.waitForLoadState("domcontentloaded");
     log("search_submitted");
