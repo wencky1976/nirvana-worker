@@ -24,6 +24,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const DECODO_USER = process.env.DECODO_USER;
 const DECODO_PASS = process.env.DECODO_PASS;
+const DECODO_MOBILE_USER = process.env.DECODO_MOBILE_USER;
+const DECODO_MOBILE_PASS = process.env.DECODO_MOBILE_PASS;
 const TWOCAPTCHA_KEY = process.env.TWOCAPTCHA_API_KEY;
 const GOLOGIN_TOKEN = process.env.GOLOGIN_TOKEN;
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || "60000", 10);
@@ -191,7 +193,12 @@ async function runJourney(job) {
       }
     : null;
 
-  const proxyConfig = { username: DECODO_USER, password: DECODO_PASS };
+  // Mobile → real carrier IPs, Desktop → residential IPs
+  const proxyUser = mobile && DECODO_MOBILE_USER ? DECODO_MOBILE_USER : DECODO_USER;
+  const proxyPass = mobile && DECODO_MOBILE_PASS ? DECODO_MOBILE_PASS : DECODO_PASS;
+  const proxyType = mobile && DECODO_MOBILE_USER ? "mobile" : "residential";
+  const proxyConfig = { username: proxyUser, password: proxyPass };
+  log("proxy_configured", `${proxyType} — ${proxyUser} → us.decodo.com:10001`);
 
   // Build Google URL with UULE
   let googleUrl = "https://www.google.com/?gl=us&hl=en";
@@ -276,7 +283,7 @@ async function runJourney(job) {
 
         const browserCookies = await context.cookies();
         const cookieStr = browserCookies.map(c => `${c.name}=${c.value}`).join("; ");
-        const proxyInfo = { host: "us.decodo.com", port: 10001, username: DECODO_USER, password: DECODO_PASS };
+        const proxyInfo = { host: "us.decodo.com", port: 10001, username: proxyUser, password: proxyPass };
         const ua = await page.evaluate(() => navigator.userAgent);
 
         const token = await solveRecaptcha(page.url(), captchaInfo.siteKey, captchaInfo.dataS, proxyInfo, cookieStr, ua);
@@ -355,7 +362,7 @@ async function runJourney(job) {
 
           const browserCookies = await context.cookies();
           const cookieStr = browserCookies.map(c => `${c.name}=${c.value}`).join("; ");
-          const proxyInfo = { host: "us.decodo.com", port: 10001, username: DECODO_USER, password: DECODO_PASS };
+          const proxyInfo = { host: "us.decodo.com", port: 10001, username: proxyUser, password: proxyPass };
           const ua = await page.evaluate(() => navigator.userAgent);
 
           log("captcha_solving", `sitekey: ${captchaInfo.siteKey.slice(0,20)}...`);
