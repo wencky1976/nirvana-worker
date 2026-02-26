@@ -69,7 +69,7 @@ async function processJob(job) {
   console.log(`\n🦑 Processing job ${jobId} — [${type}] ${job.params?.keyword || "no keyword"} (timeout: ${timeoutMs / 1000}s)`);
 
   await supabase
-    .from("jobs")
+    .from("queue_items")
     .update({ status: "running", started_at: new Date().toISOString() })
     .eq("id", jobId);
 
@@ -103,7 +103,7 @@ async function processJob(job) {
   // Save result — ALWAYS runs, even after timeout
   try {
     await supabase
-      .from("jobs")
+      .from("queue_items")
       .update({
         status: result.success ? "completed" : "failed",
         completed_at: new Date().toISOString(),
@@ -139,10 +139,11 @@ async function poll() {
   if (activeJobs >= MAX_CONCURRENT) return;
 
   const { data: jobs, error } = await supabase
-    .from("jobs")
+    .from("queue_items")
     .select("*")
-    .eq("status", "queued")
-    .order("created_at", { ascending: true })
+    .eq("status", "pending")
+    .order("priority", { ascending: false })
+    .order("scheduled_for", { ascending: true })
     .limit(MAX_CONCURRENT - activeJobs);
 
   if (error) {
@@ -185,7 +186,7 @@ async function main() {
   }
 
   // Test Supabase connection
-  const { count, error } = await supabase.from("jobs").select("*", { count: "exact", head: true });
+  const { count, error } = await supabase.from("queue_items").select("*", { count: "exact", head: true });
   if (error) {
     console.error("❌ Cannot connect to Supabase:", error.message);
     process.exit(1);
