@@ -318,9 +318,28 @@ async function runJourney(job) {
       }
     } catch { /* ok */ }
 
-    // Type keyword humanly — slow, with pauses and mistakes
+    // Type keyword humanly — with mobile-aware input handling
     const input = page.locator('textarea[name="q"], input[name="q"]').first();
-    await input.click();
+    try {
+      await input.click({ timeout: 5000 });
+      log("input_clicked");
+    } catch (clickErr) {
+      // Mobile Google: click may fail or trigger overlay — focus via JS instead
+      log("input_click_failed", "Trying JS focus + tap fallback...");
+      await page.evaluate(() => {
+        const el = document.querySelector('textarea[name="q"]') || document.querySelector('input[name="q"]');
+        if (el) { el.focus(); el.click(); }
+      });
+      await page.waitForTimeout(500);
+      // If mobile Google redirected to search overlay, look for the new input
+      const overlayInput = page.locator('input[aria-label="Search"], textarea[aria-label="Search"], input.gLFyf, textarea.gLFyf').first();
+      try {
+        if (await overlayInput.isVisible({ timeout: 2000 })) {
+          await overlayInput.click({ timeout: 3000 });
+          log("overlay_input_clicked");
+        }
+      } catch { /* proceed with keyboard typing anyway */ }
+    }
     await page.waitForTimeout(rand(500, 1200));
     for (let i = 0; i < keyword.length; i++) {
       const c = keyword[i];
