@@ -32,9 +32,30 @@ function isAdSelector() {
  * Scan organic-only results on current page, skipping ads and Maps
  */
 async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentPage) {
-  // Get all h3 links in search results
-  const h3s = page.locator("#search a h3, #rso a h3");
-  const count = await h3s.count();
+  // Get all h3 links in search results (desktop + mobile selectors)
+  // Mobile Google uses different containers — not always #search or #rso
+  let h3s = page.locator("#search a h3, #rso a h3");
+  let count = await h3s.count();
+  
+  // If no results with standard selectors, try broader mobile selectors
+  if (count === 0) {
+    // Mobile: h3 inside any link on the results page
+    h3s = page.locator('a h3, [data-sokoban-container] a h3, .mnr-c a h3, .kCrYT a h3, div[data-async-context] a h3');
+    count = await h3s.count();
+    if (count > 0) {
+      log("mobile_results_detected", `found ${count} results via mobile selectors`);
+    }
+  }
+  
+  // Last resort: find all links with visible text that look like search results
+  if (count === 0) {
+    h3s = page.locator('a[href]:not([href^="/search"]):not([href*="google.com"]) h3, a[data-ved] h3, div.g a h3, a[ping] h3');
+    count = await h3s.count();
+    if (count > 0) {
+      log("fallback_results_detected", `found ${count} results via fallback selectors`);
+    }
+  }
+
   log("organic_scan", `page ${currentPage}: ${count} results found`);
 
   for (let i = 0; i < count; i++) {
