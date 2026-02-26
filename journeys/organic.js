@@ -32,36 +32,66 @@ function isAdSelector() {
  * Scan organic-only results on current page, skipping ads and Maps
  */
 async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentPage) {
-  // Get all h3 links in search results (desktop + mobile selectors)
-  // Mobile Google uses different containers — not always #search or #rso
-  let h3s = page.locator("#search a h3, #rso a h3");
-  let count = await h3s.count();
+  // === STRATEGY 1: Desktop h3-based selectors ===
+  let results = [];
+  const h3s = page.locator("#search a h3, #rso a h3, a h3");
+  const h3Count = await h3s.count();
   
-  // If no results with standard selectors, try broader mobile selectors
-  if (count === 0) {
-    // Mobile: h3 inside any link on the results page
-    h3s = page.locator('a h3, [data-sokoban-container] a h3, .mnr-c a h3, .kCrYT a h3, div[data-async-context] a h3');
-    count = await h3s.count();
-    if (count > 0) {
-      log("mobile_results_detected", `found ${count} results via mobile selectors`);
-    }
-  }
-  
-  // Last resort: find all links with visible text that look like search results
-  if (count === 0) {
-    h3s = page.locator('a[href]:not([href^="/search"]):not([href*="google.com"]) h3, a[data-ved] h3, div.g a h3, a[ping] h3');
-    count = await h3s.count();
-    if (count > 0) {
-      log("fallback_results_detected", `found ${count} results via fallback selectors`);
+  if (h3Count > 0) {
+    log("desktop_results", `${h3Count} h3-based results found`);
+    for (let i = 0; i < h3Count; i++) {
+      const h3 = h3s.nth(i);
+      const link = h3.locator("xpath=ancestor::a");
+      const href = (await link.getAttribute("href").catch(() => "")) || "";
+      const txt = (await h3.textContent().catch(() => "")) || "";
+      if (href && !href.startsWith("/search") && !href.includes("google.com/search") && txt.trim().length > 2) {
+        results.push({ link, href, txt });
+      }
     }
   }
 
+  // === STRATEGY 2: Mobile — no h3 tags, scan ALL external links ===
+  // Mobile Google uses <div> with classes for titles, NOT <h3>
+  if (results.length === 0) {
+    log("trying_mobile_scan", "No h3 results — scanning all external links (mobile mode)");
+    const allLinks = await page.locator('a[data-ved], a[ping]').all();
+    for (const link of allLinks) {
+      const href = (await link.getAttribute("href").catch(() => "")) || "";
+      // Skip Google internal links, ads containers, image links
+      if (!href || href.startsWith("/") || href.includes("google.com") || href.includes("googleadservices") || href.includes("webcache")) continue;
+      const txt = (await link.textContent().catch(() => "")) || "";
+      if (txt.trim().length > 5) {
+        results.push({ link, href, txt });
+      }
+    }
+    if (results.length > 0) {
+      log("mobile_results_detected", `found ${results.length} link results via data-ved/ping scan`);
+    }
+  }
+
+  // === STRATEGY 3: Nuclear fallback — ANY external link on the page ===
+  if (results.length === 0) {
+    log("trying_nuclear_scan", "No data-ved results — scanning all external hrefs");
+    const allLinks = await page.locator('a[href^="http"]').all();
+    for (const link of allLinks) {
+      const href = (await link.getAttribute("href").catch(() => "")) || "";
+      if (href.includes("google.com") || href.includes("gstatic") || href.includes("googleapis")) continue;
+      const txt = (await link.textContent().catch(() => "")) || "";
+      if (txt.trim().length > 5) {
+        results.push({ link, href, txt });
+      }
+    }
+    if (results.length > 0) {
+      log("nuclear_results_detected", `found ${results.length} external links`);
+    }
+  }
+
+  const count = results.length;
   log("organic_scan", `page ${currentPage}: ${count} results found`);
 
   for (let i = 0; i < count; i++) {
-    const h3 = h3s.nth(i);
-    const link = h3.locator("xpath=ancestor::a");
-    const href = (await link.getAttribute("href").catch(() => "")) || "";
+    const { link, href, txt } = results[i];
+    // (href already extracted above)
 
     // Skip if it's an ad
     try {
@@ -106,7 +136,6 @@ async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentP
       continue;
     }
 
-    const txt = (await h3.textContent()) || "";
     const score = scoreMatch(txt, href, targetBusiness, targetUrl);
 
     if (score >= 50) {
