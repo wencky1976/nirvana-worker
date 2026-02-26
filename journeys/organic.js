@@ -54,13 +54,31 @@ async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentP
   // Mobile Google is unpredictable — some links have data-ved, some don't
   // Just grab everything external and let scoreMatch + domain matching sort it out
   if (results.length === 0) {
-    log("trying_mobile_scan", "No h3 results — scanning ALL external links (mobile mode)");
-    const allLinks = await page.locator('a[href^="http"]').all();
+    log("trying_mobile_scan", "No h3 results — scanning ALL links (mobile mode)");
+    // Mobile Google wraps links in /url?q=ACTUAL_URL — must catch BOTH patterns
+    const allLinks = await page.locator('a[href^="http"], a[href^="/url"]').all();
     for (const link of allLinks) {
-      const href = (await link.getAttribute("href").catch(() => "")) || "";
+      let href = (await link.getAttribute("href").catch(() => "")) || "";
+      
+      // Extract real URL from Google redirect: /url?q=https://www.zestra.com/...&sa=...
+      if (href.startsWith("/url")) {
+        try {
+          const urlObj = new URL(href, "https://www.google.com");
+          const realUrl = urlObj.searchParams.get("q") || urlObj.searchParams.get("url") || "";
+          if (realUrl && realUrl.startsWith("http")) {
+            href = realUrl;
+          } else {
+            continue; // Skip if can't extract real URL
+          }
+        } catch {
+          continue;
+        }
+      }
+      
       // Skip Google internal, ads, cache, images
       if (href.includes("google.com") || href.includes("gstatic") || href.includes("googleapis") || 
-          href.includes("googleadservices") || href.includes("webcache") || href.includes("youtube.com/watch")) continue;
+          href.includes("googleadservices") || href.includes("webcache") || href.includes("youtube.com/watch") ||
+          href.includes("accounts.google")) continue;
       const txt = (await link.textContent().catch(() => "")) || "";
       if (txt.trim().length > 2) {
         results.push({ link, href, txt });
@@ -164,10 +182,8 @@ async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentP
  */
 async function goToNextPage(page, currentPage, log) {
   // Scroll ALL the way down to reveal pagination / "More results" button
-  for (let i = 0; i < 3; i++) {
-    await page.mouse.wheel(0, rand(1500, 3000));
-    await page.waitForTimeout(rand(500, 1000));
-  }
+  // Use humanScroll which auto-detects mobile vs desktop
+  await humanScroll(page, rand(3000, 5000));
   await page.waitForTimeout(rand(1000, 2000));
 
   // === MOBILE FIRST: "More results" / "More search results" button ===
@@ -189,16 +205,33 @@ async function goToNextPage(page, currentPage, log) {
       if (await btn.isVisible({ timeout: 1500 })) {
         const btnText = (await btn.textContent().catch(() => "")) || "";
         log("mobile_pagination_found", `"${btnText.trim().slice(0, 50)}" via ${selector}`);
+        
+        // Count existing links BEFORE clicking so we can detect new ones
+        const linkCountBefore = await page.locator('a[href^="http"], a[href^="/url"]').count();
+        
         await btn.scrollIntoViewIfNeeded();
         await page.waitForTimeout(rand(500, 1500));
         await btn.click();
-        // Mobile loads inline — wait for new results to appear
-        await page.waitForTimeout(rand(2000, 4000));
-        try {
-          await page.waitForSelector("#search a h3, #rso a h3", { timeout: 10000 });
-        } catch { /* results may already be there */ }
-        log("page_navigated", `now on page ${currentPage + 1} (mobile inline)`);
+        
+        // Mobile loads inline via AJAX — wait for NEW links to appear
+        // Poll until link count increases or timeout
+        let waited = 0;
+        const maxWait = 15000;
+        while (waited < maxWait) {
+          await page.waitForTimeout(1000);
+          waited += 1000;
+          const linkCountAfter = await page.locator('a[href^="http"], a[href^="/url"]').count();
+          if (linkCountAfter > linkCountBefore) {
+            log("page_navigated", `now on page ${currentPage + 1} (mobile inline, ${linkCountAfter - linkCountBefore} new links)`);
+            break;
+          }
+        }
+        if (waited >= maxWait) {
+          log("pagination_load_slow", `clicked but no new links after ${maxWait/1000}s`);
+        }
         await page.waitForTimeout(rand(1500, 3000));
+        // Scroll up slightly to see new results from top of new batch
+        await humanScroll(page, rand(100, 300));
         return true;
       }
     } catch { /* try next selector */ }
