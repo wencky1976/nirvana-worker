@@ -50,39 +50,24 @@ async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentP
     }
   }
 
-  // === STRATEGY 2: Mobile — no h3 tags, scan ALL external links ===
-  // Mobile Google uses <div> with classes for titles, NOT <h3>
+  // === STRATEGY 2: Scan ALL external links on the page ===
+  // Mobile Google is unpredictable — some links have data-ved, some don't
+  // Just grab everything external and let scoreMatch + domain matching sort it out
   if (results.length === 0) {
-    log("trying_mobile_scan", "No h3 results — scanning all external links (mobile mode)");
-    const allLinks = await page.locator('a[data-ved], a[ping]').all();
-    for (const link of allLinks) {
-      const href = (await link.getAttribute("href").catch(() => "")) || "";
-      // Skip Google internal links, ads containers, image links
-      if (!href || href.startsWith("/") || href.includes("google.com") || href.includes("googleadservices") || href.includes("webcache")) continue;
-      const txt = (await link.textContent().catch(() => "")) || "";
-      if (txt.trim().length > 5) {
-        results.push({ link, href, txt });
-      }
-    }
-    if (results.length > 0) {
-      log("mobile_results_detected", `found ${results.length} link results via data-ved/ping scan`);
-    }
-  }
-
-  // === STRATEGY 3: Nuclear fallback — ANY external link on the page ===
-  if (results.length === 0) {
-    log("trying_nuclear_scan", "No data-ved results — scanning all external hrefs");
+    log("trying_mobile_scan", "No h3 results — scanning ALL external links (mobile mode)");
     const allLinks = await page.locator('a[href^="http"]').all();
     for (const link of allLinks) {
       const href = (await link.getAttribute("href").catch(() => "")) || "";
-      if (href.includes("google.com") || href.includes("gstatic") || href.includes("googleapis")) continue;
+      // Skip Google internal, ads, cache, images
+      if (href.includes("google.com") || href.includes("gstatic") || href.includes("googleapis") || 
+          href.includes("googleadservices") || href.includes("webcache") || href.includes("youtube.com/watch")) continue;
       const txt = (await link.textContent().catch(() => "")) || "";
-      if (txt.trim().length > 5) {
+      if (txt.trim().length > 2) {
         results.push({ link, href, txt });
       }
     }
     if (results.length > 0) {
-      log("nuclear_results_detected", `found ${results.length} external links`);
+      log("mobile_results_detected", `found ${results.length} external links`);
     }
   }
 
