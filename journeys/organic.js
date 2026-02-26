@@ -118,22 +118,59 @@ async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentP
  * Navigate to next Google results page
  */
 async function goToNextPage(page, currentPage, log) {
-  // Scroll down to see pagination
-  await page.mouse.wheel(0, rand(800, 1500));
+  // Scroll ALL the way down to reveal pagination / "More results" button
+  for (let i = 0; i < 3; i++) {
+    await page.mouse.wheel(0, rand(1500, 3000));
+    await page.waitForTimeout(rand(500, 1000));
+  }
   await page.waitForTimeout(rand(1000, 2000));
 
-  // Try different pagination selectors (desktop + mobile)
-  const nextSelectors = [
-    `a[aria-label="Page ${currentPage + 1}"]`,     // Desktop: specific page number
-    '#pnnext',                                        // Desktop: "Next" link
-    'a[id="pnnext"]',                                 // Desktop alt
-    'a:has-text("Next")',                             // Text-based
-    'a:has-text("Næste")',                            // Danish
-    'td.navend a',                                    // Classic Google
-    'a.fl[href*="start="]',                           // Mobile pagination links
+  // === MOBILE FIRST: "More results" / "More search results" button ===
+  // Mobile Google loads results inline via a button instead of page links
+  const mobileSelectors = [
+    'a:has-text("More results")',                      // Most common mobile button
+    'a:has-text("More search results")',               // Alternative text
+    'div[role="button"]:has-text("More results")',     // Button variant
+    'span:has-text("More results")',                   // Span variant
+    'a[aria-label="More results"]',                    // Aria label
+    'a[aria-label="More search results"]',             // Aria alt
+    'div.YMIyqf a',                                    // Mobile "More results" container
+    '#ofr a',                                          // Omitted results footer
   ];
 
-  for (const selector of nextSelectors) {
+  for (const selector of mobileSelectors) {
+    try {
+      const btn = page.locator(selector).first();
+      if (await btn.isVisible({ timeout: 1500 })) {
+        const btnText = (await btn.textContent().catch(() => "")) || "";
+        log("mobile_pagination_found", `"${btnText.trim().slice(0, 50)}" via ${selector}`);
+        await btn.scrollIntoViewIfNeeded();
+        await page.waitForTimeout(rand(500, 1500));
+        await btn.click();
+        // Mobile loads inline — wait for new results to appear
+        await page.waitForTimeout(rand(2000, 4000));
+        try {
+          await page.waitForSelector("#search a h3, #rso a h3", { timeout: 10000 });
+        } catch { /* results may already be there */ }
+        log("page_navigated", `now on page ${currentPage + 1} (mobile inline)`);
+        await page.waitForTimeout(rand(1500, 3000));
+        return true;
+      }
+    } catch { /* try next selector */ }
+  }
+
+  // === DESKTOP: Traditional pagination links ===
+  const desktopSelectors = [
+    `a[aria-label="Page ${currentPage + 1}"]`,         // Specific page number
+    '#pnnext',                                          // "Next" link
+    'a[id="pnnext"]',                                   // "Next" alt
+    'a:has-text("Next")',                               // Text-based
+    'a:has-text("Næste")',                              // Danish
+    'td.navend a',                                      // Classic Google nav
+    'a.fl[href*="start="]',                             // Fallback pagination links
+  ];
+
+  for (const selector of desktopSelectors) {
     try {
       const nextBtn = page.locator(selector).first();
       if (await nextBtn.isVisible({ timeout: 2000 })) {
@@ -149,7 +186,7 @@ async function goToNextPage(page, currentPage, log) {
     } catch { /* try next selector */ }
   }
 
-  log("pagination_failed", `could not find page ${currentPage + 1} link`);
+  log("pagination_failed", `could not find page ${currentPage + 1} link (tried mobile + desktop selectors)`);
   return false;
 }
 
