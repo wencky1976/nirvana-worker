@@ -50,42 +50,73 @@ async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentP
     }
   }
 
-  // === STRATEGY 2: Scan ALL external links on the page ===
-  // Mobile Google is unpredictable — some links have data-ved, some don't
-  // Just grab everything external and let scoreMatch + domain matching sort it out
+  // === STRATEGY 2: JavaScript DOM scan — bypass Playwright selector issues ===
+  // Use page.evaluate to get ALL anchor hrefs directly from the DOM
   if (results.length === 0) {
-    log("trying_mobile_scan", "No h3 results — scanning ALL links (mobile mode)");
-    // Mobile Google wraps links in /url?q=ACTUAL_URL — must catch BOTH patterns
-    const allLinks = await page.locator('a[href^="http"], a[href^="/url"]').all();
-    for (const link of allLinks) {
-      let href = (await link.getAttribute("href").catch(() => "")) || "";
-      
-      // Extract real URL from Google redirect: /url?q=https://www.zestra.com/...&sa=...
-      if (href.startsWith("/url")) {
-        try {
-          const urlObj = new URL(href, "https://www.google.com");
-          const realUrl = urlObj.searchParams.get("q") || urlObj.searchParams.get("url") || "";
-          if (realUrl && realUrl.startsWith("http")) {
-            href = realUrl;
-          } else {
-            continue; // Skip if can't extract real URL
-          }
-        } catch {
-          continue;
+    log("trying_js_scan", "No h3 results — JS DOM scan for all links");
+    
+    // Get all link data from the page via JavaScript
+    const linkData = await page.evaluate(() => {
+      const anchors = document.querySelectorAll('a');
+      const data = [];
+      for (const a of anchors) {
+        let href = a.href || a.getAttribute('href') || '';
+        // Handle /url?q= redirects
+        if (href.includes('/url?')) {
+          try {
+            const u = new URL(href);
+            const q = u.searchParams.get('q') || u.searchParams.get('url');
+            if (q && q.startsWith('http')) href = q;
+          } catch {}
+        }
+        const txt = (a.textContent || '').trim();
+        const rect = a.getBoundingClientRect();
+        if (href && txt.length > 2 && rect.height > 0) {
+          data.push({ href, txt: txt.slice(0, 200), index: data.length, y: rect.y });
         }
       }
-      
-      // Skip Google internal, ads, cache, images
-      if (href.includes("google.com") || href.includes("gstatic") || href.includes("googleapis") || 
-          href.includes("googleadservices") || href.includes("webcache") || href.includes("youtube.com/watch") ||
-          href.includes("accounts.google")) continue;
-      const txt = (await link.textContent().catch(() => "")) || "";
-      if (txt.trim().length > 2) {
-        results.push({ link, href, txt });
-      }
+      return data;
+    });
+    
+    // Filter to external links only
+    const externalLinks = linkData.filter(d => {
+      const h = d.href.toLowerCase();
+      return h.startsWith('http') && 
+        !h.includes('google.com') && !h.includes('gstatic') && 
+        !h.includes('googleapis') && !h.includes('googleadservices') &&
+        !h.includes('accounts.google') && !h.includes('webcache');
+    });
+    
+    log("js_scan_results", `${externalLinks.length} external links found (from ${linkData.length} total)`);
+    
+    // Log ALL external links so we can debug
+    for (let i = 0; i < Math.min(externalLinks.length, 20); i++) {
+      const d = externalLinks[i];
+      const domain = d.href.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+      log("link_dump", `[${i}] ${domain} → "${d.txt.slice(0, 50)}" (y=${Math.round(d.y)})`);
     }
+    
+    // Now match each with a Playwright locator for clicking
+    for (const d of externalLinks) {
+      // Find the clickable element using the href
+      const escapedHref = d.href.replace(/"/g, '\\"');
+      let link;
+      try {
+        // Try exact href match first
+        link = page.locator(`a[href="${escapedHref}"]`).first();
+        if (await link.count() === 0) {
+          // Try partial href match (Google might modify the URL)
+          const domain = d.href.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+          link = page.locator(`a[href*="${domain}"]`).first();
+        }
+      } catch {
+        continue;
+      }
+      results.push({ link, href: d.href, txt: d.txt });
+    }
+    
     if (results.length > 0) {
-      log("mobile_results_detected", `found ${results.length} external links`);
+      log("mobile_results_detected", `${results.length} clickable external links mapped`);
     }
   }
 
