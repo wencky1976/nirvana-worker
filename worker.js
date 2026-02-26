@@ -47,51 +47,90 @@ function getJourney(job) {
   return { journey, type };
 }
 
+// ── Timeout Helper ──────────────────────────────────────
+const JOB_TIMEOUT_MS = parseInt(process.env.JOB_TIMEOUT_MS || "300000", 10); // 5 min default
+
+function withTimeout(promise, ms, jobId) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`JOB_TIMEOUT: Job ${jobId} exceeded ${ms / 1000}s timeout — force killed`));
+    }, ms);
+    promise
+      .then((val) => { clearTimeout(timer); resolve(val); })
+      .catch((err) => { clearTimeout(timer); reject(err); });
+  });
+}
+
 // ── Job Processor ───────────────────────────────────────
 async function processJob(job) {
   const jobId = job.id;
   const { journey, type } = getJourney(job);
-  console.log(`\n🦑 Processing job ${jobId} — [${type}] ${job.params?.keyword || "no keyword"}`);
+  const timeoutMs = job.params?.timeoutMs || JOB_TIMEOUT_MS;
+  console.log(`\n🦑 Processing job ${jobId} — [${type}] ${job.params?.keyword || "no keyword"} (timeout: ${timeoutMs / 1000}s)`);
 
   await supabase
     .from("jobs")
     .update({ status: "running", started_at: new Date().toISOString() })
     .eq("id", jobId);
 
-  // Retry up to 5 times with fresh profiles on CAPTCHA
   let result;
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    if (attempt > 1) console.log(`  🔄 Retry #${attempt} with fresh GoLogin profile + IP...`);
-    result = await journey.run(job);
-    if (!result.captcha) break;
-    await new Promise((r) => setTimeout(r, rand(2000, 5000)));
+  try {
+    // Wrap the entire journey execution in a timeout
+    result = await withTimeout(async function runWithRetries() {
+      // Retry up to 5 times with fresh profiles on CAPTCHA
+      let res;
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        if (attempt > 1) console.log(`  🔄 Retry #${attempt} with fresh GoLogin profile + IP...`);
+        res = await journey.run(job);
+        if (!res.captcha) break;
+        await new Promise((r) => setTimeout(r, rand(2000, 5000)));
+      }
+      return res;
+    }(), timeoutMs, jobId);
+  } catch (err) {
+    // Timeout or unexpected crash — mark as failed
+    console.error(`  ⏰ Job ${jobId} timed out or crashed: ${err.message}`);
+    result = {
+      success: false,
+      found: false,
+      error: err.message,
+      journeyType: type,
+      steps: [],
+      duration_ms: timeoutMs,
+    };
   }
 
-  // Save result
-  await supabase
-    .from("jobs")
-    .update({
-      status: result.success ? "completed" : "failed",
-      completed_at: new Date().toISOString(),
-      result,
-      error: result.error || null,
-    })
-    .eq("id", jobId);
+  // Save result — ALWAYS runs, even after timeout
+  try {
+    await supabase
+      .from("jobs")
+      .update({
+        status: result.success ? "completed" : "failed",
+        completed_at: new Date().toISOString(),
+        result,
+        error: result.error || null,
+      })
+      .eq("id", jobId);
 
-  // Save execution logs
-  for (let i = 0; i < result.steps.length; i++) {
-    const step = result.steps[i];
-    await supabase.from("execution_logs").insert({
-      job_id: jobId,
-      step_number: i,
-      action: step.action,
-      details: { timestamp_ms: step.timestamp, info: step.details },
-      duration_ms: step.timestamp,
-    });
+    // Save execution logs
+    if (result.steps && result.steps.length > 0) {
+      for (let i = 0; i < result.steps.length; i++) {
+        const step = result.steps[i];
+        await supabase.from("execution_logs").insert({
+          job_id: jobId,
+          step_number: i,
+          action: step.action,
+          details: { timestamp_ms: step.timestamp, info: step.details },
+          duration_ms: step.timestamp,
+        });
+      }
+    }
+  } catch (dbErr) {
+    console.error(`  ❌ Failed to save result for job ${jobId}:`, dbErr.message);
   }
 
   console.log(
-    `  ✅ Job ${jobId} [${type}] ${result.success ? "completed" : "failed"} — ${result.found ? `FOUND (rank #${result.clickedRank})` : "not found"} (${(result.duration_ms / 1000).toFixed(1)}s)`
+    `  ${result.success ? "✅" : "❌"} Job ${jobId} [${type}] ${result.success ? "completed" : "failed"} — ${result.found ? `FOUND (rank #${result.clickedRank})` : "not found"} (${(result.duration_ms / 1000).toFixed(1)}s)`
   );
 }
 
