@@ -238,31 +238,60 @@ async function goToNextPage(page, currentPage, log) {
         log("mobile_pagination_found", `"${btnText.trim().slice(0, 50)}" via ${selector}`);
         
         // Count existing links BEFORE clicking so we can detect new ones
-        const linkCountBefore = await page.locator('a[href^="http"], a[href^="/url"]').count();
+        const linkCountBefore = await page.evaluate(() => document.querySelectorAll('a').length);
+        const scrollBefore = await page.evaluate(() => document.body.scrollHeight);
         
         await btn.scrollIntoViewIfNeeded();
         await page.waitForTimeout(rand(500, 1500));
-        await btn.click();
         
-        // Mobile loads inline via AJAX — wait for NEW links to appear
-        // Poll until link count increases or timeout
+        // Try multiple click methods — mobile Google buttons are finicky
+        let clicked = false;
+        
+        // Method 1: Touch tap (most realistic for mobile)
+        try {
+          const box = await btn.boundingBox();
+          if (box) {
+            const tapX = box.x + box.width / 2;
+            const tapY = box.y + box.height / 2;
+            await page.touchscreen.tap(tapX, tapY);
+            log("pagination_tap", `touch tap at (${Math.round(tapX)}, ${Math.round(tapY)})`);
+            clicked = true;
+          }
+        } catch (tapErr) {
+          log("pagination_tap_failed", tapErr.message.slice(0, 80));
+        }
+        
+        // Method 2: JavaScript click (if touch tap didn't work)
+        if (!clicked) {
+          try {
+            await btn.evaluate(el => el.click());
+            log("pagination_js_click", "used JavaScript click");
+            clicked = true;
+          } catch {
+            // Method 3: Regular Playwright click
+            await btn.click();
+            log("pagination_pw_click", "used Playwright click");
+          }
+        }
+        
+        // Wait for new content to load — check both link count AND scroll height
         let waited = 0;
         const maxWait = 15000;
         while (waited < maxWait) {
           await page.waitForTimeout(1000);
           waited += 1000;
-          const linkCountAfter = await page.locator('a[href^="http"], a[href^="/url"]').count();
-          if (linkCountAfter > linkCountBefore) {
-            log("page_navigated", `now on page ${currentPage + 1} (mobile inline, ${linkCountAfter - linkCountBefore} new links)`);
+          const linkCountAfter = await page.evaluate(() => document.querySelectorAll('a').length);
+          const scrollAfter = await page.evaluate(() => document.body.scrollHeight);
+          if (linkCountAfter > linkCountBefore || scrollAfter > scrollBefore + 200) {
+            log("page_navigated", `page ${currentPage + 1} loaded (links: ${linkCountBefore}→${linkCountAfter}, height: ${scrollBefore}→${scrollAfter})`);
             break;
           }
         }
         if (waited >= maxWait) {
-          log("pagination_load_slow", `clicked but no new links after ${maxWait/1000}s`);
+          log("pagination_load_slow", `clicked but no new content after ${maxWait/1000}s`);
+          // Don't return false — still try scanning what we have
         }
-        await page.waitForTimeout(rand(1500, 3000));
-        // Scroll up slightly to see new results from top of new batch
-        await humanScroll(page, rand(100, 300));
+        await page.waitForTimeout(rand(2000, 4000));
         return true;
       }
     } catch { /* try next selector */ }
