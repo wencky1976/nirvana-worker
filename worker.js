@@ -1,5 +1,5 @@
 /**
- * NirvanaTraffic VPS Worker v3.0 — Modular Edition
+ * NirvanaTraffic VPS Worker v3.1 — Modular Edition
  * 
  * Polls Supabase job queue → routes to journey module → reports results.
  * 
@@ -61,9 +61,33 @@ function withTimeout(promise, ms, jobId) {
   });
 }
 
+// ── Queue Item → Job Params Mapper ──────────────────────
+function mapQueueItemToParams(item) {
+  // queue_items store config in `result` field (set at creation time)
+  // Worker journeys expect `params` with keyword, targetUrl, etc.
+  const r = item.result || {};
+  return {
+    keyword: r.keyword || "",
+    targetUrl: r.target_url || "",
+    targetBusiness: r.target_url ? new URL(r.target_url.startsWith("http") ? r.target_url : `https://${r.target_url}`).hostname.replace("www.", "") : "",
+    target_url: r.target_url || "",
+    target_business: r.target_url ? new URL(r.target_url.startsWith("http") ? r.target_url : `https://${r.target_url}`).hostname.replace("www.", "") : "",
+    wildcard: r.wildcard || false,
+    searchEngine: r.search_engine || "google.com",
+    device: r.device || "desktop",
+    location: r.location || {},
+    journeyType: "organic",
+    journey_type: "organic",
+  };
+}
+
 // ── Job Processor ───────────────────────────────────────
 async function processJob(job) {
   const jobId = job.id;
+  // Map queue_item fields to params format that journeys expect
+  if (!job.params) {
+    job.params = mapQueueItemToParams(job);
+  }
   const { journey, type } = getJourney(job);
   const timeoutMs = job.params?.timeoutMs || JOB_TIMEOUT_MS;
   console.log(`\n🦑 Processing job ${jobId} — [${type}] ${job.params?.keyword || "no keyword"} (timeout: ${timeoutMs / 1000}s)`);
@@ -165,7 +189,7 @@ async function poll() {
 async function main() {
   const journeyList = Object.keys(JOURNEYS).join(", ");
   console.log("╔══════════════════════════════════════════╗");
-  console.log("║   🦑 NirvanaTraffic Worker v3.0          ║");
+  console.log("║   🦑 NirvanaTraffic Worker v3.1          ║");
   console.log("║   🎭 GoLogin Fingerprinting               ║");
   console.log("║   🌐 Decodo Residential + Mobile Proxies  ║");
   console.log("║   📦 Journeys: " + journeyList.padEnd(25) + " ║");
