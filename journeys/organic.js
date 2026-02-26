@@ -8,7 +8,7 @@
  * and only clicks organic blue links, even going to page 2, 3, 4, 5.
  */
 
-const { rand, scoreMatch, createLogger, setupBrowserSession, searchGoogle, dwell, cleanup, handleCaptcha } = require("../lib/shared");
+const { rand, scoreMatch, createLogger, setupBrowserSession, searchGoogle, dwell, cleanup, handleCaptcha, humanScroll, humanMouseMove, humanIdle } = require("../lib/shared");
 
 const MAX_PAGES = 5;
 
@@ -91,10 +91,19 @@ async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentP
     if (score >= 50) {
       // Scroll to it naturally
       await link.scrollIntoViewIfNeeded();
-      await page.waitForTimeout(rand(500, 1200));
-      
-      // Human pause — reading the snippet before clicking
       await page.waitForTimeout(rand(800, 2000));
+      
+      // Human behavior: move mouse toward the result, hover, read snippet
+      const box = await link.boundingBox().catch(() => null);
+      if (box) {
+        await humanMouseMove(page, box.x + rand(10, Math.min(200, box.width)), box.y + rand(2, 15));
+        await page.waitForTimeout(rand(600, 1800)); // Reading the snippet
+      }
+      
+      // Sometimes hover over the URL first (humans check the domain)
+      if (Math.random() < 0.4) {
+        await page.waitForTimeout(rand(400, 1000));
+      }
       
       await link.click();
       log("organic_target_clicked", `page ${currentPage}, pos ${i + 1} (score:${score}): ${txt.slice(0, 100)}`);
@@ -192,9 +201,14 @@ async function run(job) {
       if (currentPage < maxPages) {
         log("target_not_on_page", `page ${currentPage} — scrolling to next`);
 
-        // Simulate reading through results before giving up on this page
-        await page.mouse.wheel(0, rand(400, 800));
-        await page.waitForTimeout(rand(1000, 2000));
+        // Human behavior: scroll through rest of results, maybe read a snippet, then go to next page
+        await humanScroll(page, rand(400, 800));
+        await page.waitForTimeout(rand(1500, 3500)); // Looking at bottom of page
+        
+        // Sometimes move mouse around before clicking next (considering options)
+        if (Math.random() < 0.5) {
+          await humanIdle(page, 1000, 3000);
+        }
 
         // Check for captcha before paginating
         const captchaOk = await handleCaptcha(page, context, proxyConfig, log);

@@ -5,7 +5,7 @@
  * This is the default "Search Push" journey.
  */
 
-const { rand, scoreMatch, createLogger, setupBrowserSession, searchGoogle, dwell, cleanup } = require("../lib/shared");
+const { rand, scoreMatch, createLogger, setupBrowserSession, searchGoogle, dwell, cleanup, humanMouseMove } = require("../lib/shared");
 
 async function run(job) {
   const startTime = Date.now();
