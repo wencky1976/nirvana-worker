@@ -137,8 +137,18 @@ async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentP
     }
 
     const score = scoreMatch(txt, href, targetBusiness, targetUrl);
+    
+    // Direct domain match — if the target URL/domain appears in href, that's our target
+    const targetDomain = (targetUrl || "").toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
+    const hrefDomain = href.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
+    const domainMatch = targetDomain && (hrefDomain === targetDomain || hrefDomain.endsWith("." + targetDomain) || href.toLowerCase().includes(targetDomain));
+    
+    // Debug: log first 10 results so we can see what's being scanned
+    if (i < 10) {
+      log("result_debug", `[${i}] score=${score} domain=${domainMatch} href="${href.slice(0, 80)}" txt="${txt.slice(0, 60)}"`);
+    }
 
-    if (score >= 50) {
+    if (score >= 50 || domainMatch) {
       // Scroll to it naturally
       await link.scrollIntoViewIfNeeded();
       await page.waitForTimeout(rand(800, 2000));
