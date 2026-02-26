@@ -125,13 +125,24 @@ async function processJob(job) {
   }
 
   // Save result — ALWAYS runs, even after timeout
+  // Merge original config (keyword, target_url, etc.) into result so it's preserved
+  const originalConfig = job.result || {};
+  const mergedResult = {
+    ...result,
+    keyword: originalConfig.keyword || job.params?.keyword || result.keyword,
+    target_url: originalConfig.target_url || job.params?.target_url || result.target_url,
+    wildcard: originalConfig.wildcard,
+    search_engine: originalConfig.search_engine || job.params?.searchEngine,
+    device: originalConfig.device || job.params?.device,
+    location: originalConfig.location || job.params?.location,
+  };
   try {
     await supabase
       .from("queue_items")
       .update({
         status: result.success ? "completed" : "failed",
         completed_at: new Date().toISOString(),
-        result,
+        result: mergedResult,
         error: result.error || null,
       })
       .eq("id", jobId);
