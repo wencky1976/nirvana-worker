@@ -359,16 +359,24 @@ async function run(job) {
       if (result.found) {
         // Target found and clicked — dwell
         await dwell(page, dwellTimeMs, log);
+        const durationMs = Date.now() - startTime;
         return {
           success: true,
           found: true,
+          click: true,
           clickedRank: result.globalRank,
           clickedPage: result.page,
           clickedPosition: result.rank,
+          position: result.globalRank,
           pagesScanned: currentPage,
+          pages_visited: currentPage,
+          time_on_site: Math.round(durationMs / 1000),
+          proxy: session.proxyConfig?.server || "",
+          user_agent: await page.evaluate(() => navigator.userAgent).catch(() => ""),
+          engine: "google.com",
           journeyType: "organic",
           steps,
-          duration_ms: Date.now() - startTime,
+          duration_ms: durationMs,
         };
       }
 
@@ -402,20 +410,28 @@ async function run(job) {
     // Target not found after all pages
     const pageTitle = await page.title();
     log("target_not_found", `"${targetBusiness}" not found in ${maxPages} pages of organic results. Title: "${pageTitle}"`);
+    const durationMs = Date.now() - startTime;
     return {
       success: true,
       found: false,
+      click: false,
       clickedRank: 0,
+      position: 0,
       pagesScanned: maxPages,
+      pages_visited: maxPages,
+      time_on_site: Math.round(durationMs / 1000),
+      proxy: session?.proxyConfig?.server || "",
+      user_agent: session ? await session.page.evaluate(() => navigator.userAgent).catch(() => "") : "",
+      engine: "google.com",
       journeyType: "organic",
       steps,
-      duration_ms: Date.now() - startTime,
+      duration_ms: durationMs,
     };
 
   } catch (err) {
     const errDetail = err.response?.data ? JSON.stringify(err.response.data).slice(0, 200) : err.message;
     log("error", errDetail);
-    return { success: false, found: false, steps, error: errDetail, journeyType: "organic", duration_ms: Date.now() - startTime };
+    return { success: false, found: false, click: false, position: 0, pages_visited: 0, time_on_site: 0, proxy: "", user_agent: "", engine: "google.com", steps, error: errDetail, journeyType: "organic", duration_ms: Date.now() - startTime };
   } finally {
     if (session) await cleanup(session.browser, session.glApi, session.profileId);
   }
