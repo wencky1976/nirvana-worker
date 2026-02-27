@@ -177,11 +177,13 @@ async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentP
     const hrefDomain = href.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
     const domainMatch = targetDomain && (hrefDomain === targetDomain || hrefDomain.endsWith("." + targetDomain));
     
-    // Exact URL match: normalize both URLs (strip protocol, www, trailing slash)
+    // Exact URL match: normalize both URLs (strip protocol, www, trailing slash, query params)
     const normalizeUrl = (u) => u.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, "");
+    const stripQuery = (u) => u.split("?")[0].split("#")[0].replace(/\/+$/, "");
     const targetNorm = normalizeUrl(targetUrl || "");
     const hrefNorm = normalizeUrl(href);
-    const exactMatch = targetNorm && (hrefNorm === targetNorm || hrefNorm.startsWith(targetNorm + "?") || hrefNorm.startsWith(targetNorm + "#"));
+    // Match: exact URL, or same path with different query params (Shopify adds ?srsltid= etc)
+    const exactMatch = targetNorm && (hrefNorm === targetNorm || hrefNorm.startsWith(targetNorm + "?") || hrefNorm.startsWith(targetNorm + "#") || stripQuery(hrefNorm) === stripQuery(targetNorm));
     
     // Use exact match for non-wildcard, domain match for wildcard
     const isMatch = wildcard ? (domainMatch || score >= 50) : (exactMatch || score >= 100);
