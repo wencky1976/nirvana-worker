@@ -31,7 +31,7 @@ function isAdSelector() {
 /**
  * Scan organic-only results on current page, skipping ads and Maps
  */
-async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentPage) {
+async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentPage, wildcard = true) {
   // === STRATEGY 1: Desktop h3-based selectors ===
   let results = [];
   const h3s = page.locator("#search a h3, #rso a h3, a h3");
@@ -172,17 +172,26 @@ async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentP
 
     const score = scoreMatch(txt, href, targetBusiness, targetUrl);
     
-    // Direct domain match — if the target URL/domain appears in href, that's our target
+    // URL matching: wildcard = domain match, non-wildcard = exact URL match
     const targetDomain = (targetUrl || "").toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
     const hrefDomain = href.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
-    const domainMatch = targetDomain && (hrefDomain === targetDomain || hrefDomain.endsWith("." + targetDomain) || href.toLowerCase().includes(targetDomain));
+    const domainMatch = targetDomain && (hrefDomain === targetDomain || hrefDomain.endsWith("." + targetDomain));
+    
+    // Exact URL match: normalize both URLs (strip protocol, www, trailing slash)
+    const normalizeUrl = (u) => u.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, "");
+    const targetNorm = normalizeUrl(targetUrl || "");
+    const hrefNorm = normalizeUrl(href);
+    const exactMatch = targetNorm && (hrefNorm === targetNorm || hrefNorm.startsWith(targetNorm + "?") || hrefNorm.startsWith(targetNorm + "#"));
+    
+    // Use exact match for non-wildcard, domain match for wildcard
+    const isMatch = wildcard ? (domainMatch || score >= 50) : (exactMatch || score >= 100);
     
     // Debug: log first 10 results so we can see what's being scanned
     if (i < 10) {
-      log("result_debug", `[${i}] score=${score} domain=${domainMatch} href="${href.slice(0, 80)}" txt="${txt.slice(0, 60)}"`);
+      log("result_debug", `[${i}] score=${score} domain=${domainMatch} exact=${exactMatch} wildcard=${wildcard} match=${isMatch} href="${href.slice(0, 80)}" txt="${txt.slice(0, 60)}"`);
     }
 
-    if (score >= 50 || domainMatch) {
+    if (isMatch) {
       // Scroll to it naturally
       await link.scrollIntoViewIfNeeded();
       await page.waitForTimeout(rand(800, 2000));
@@ -343,6 +352,7 @@ async function run(job) {
   const keyword = params.keyword || "";
   const targetBusiness = params.targetBusiness || params.target_business || "";
   const targetUrl = params.targetUrl || params.target_url || "";
+  const wildcard = params.wildcard !== undefined ? params.wildcard : true; // default true for backward compat
   const dwellTimeMs = params.dwellTimeMs || params.dwell_time_ms || rand(15000, 45000);
   const maxPages = params.maxPages || MAX_PAGES;
 
@@ -362,7 +372,7 @@ async function run(job) {
         await page.waitForTimeout(rand(800, 1500));
       }
 
-      const result = await scanOrganicResults(page, targetBusiness, targetUrl, log, currentPage);
+      const result = await scanOrganicResults(page, targetBusiness, targetUrl, log, currentPage, wildcard);
 
       if (result.found) {
         // Target found and clicked — dwell
