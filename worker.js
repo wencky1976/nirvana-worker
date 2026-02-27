@@ -17,7 +17,7 @@
 require("dotenv").config();
 const { createClient } = require("@supabase/supabase-js");
 const axios = require("axios");
-const { CONFIG, GL_API, GL_HEADERS, rand } = require("./lib/shared");
+const { CONFIG, GL_API, GL_HEADERS, rand, cleanupOrphanProfiles } = require("./lib/shared");
 
 // ── Journey Modules ─────────────────────────────────────
 const JOURNEYS = {
@@ -229,6 +229,10 @@ async function main() {
   }
   console.log(`✅ Connected to Supabase — ${count} total jobs in queue`);
   console.log(`✅ Loaded ${Object.keys(JOURNEYS).length} journey types: ${journeyList}`);
+
+  // Clean up any orphan GoLogin profiles from previous crashed runs
+  await cleanupOrphanProfiles();
+
   console.log("👀 Watching for queued jobs...\n");
 
   setInterval(poll, POLL_INTERVAL);

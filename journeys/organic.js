@@ -385,6 +385,7 @@ async function run(job) {
           captcha_used: steps.some(s => s.action === "captcha_solved" || s.action === "captcha_bypassed"),
           engine: "google.com",
           journeyType: "organic",
+          fingerprint: session.fingerprint || null,
           steps,
           duration_ms: durationMs,
         };
@@ -436,6 +437,7 @@ async function run(job) {
       captcha_used: steps.some(s => s.action === "captcha_solved" || s.action === "captcha_bypassed"),
       engine: "google.com",
       journeyType: "organic",
+      fingerprint: session?.fingerprint || null,
       steps,
       duration_ms: durationMs,
     };
@@ -443,7 +445,7 @@ async function run(job) {
   } catch (err) {
     const errDetail = err.response?.data ? JSON.stringify(err.response.data).slice(0, 200) : err.message;
     log("error", errDetail);
-    return { success: false, found: false, click: false, position: 0, pages_visited: 0, time_on_site: 0, proxy: "", user_agent: "", device: params.device || "desktop", captcha_used: steps.some(s => s.action === "captcha_solved" || s.action === "captcha_bypassed"), engine: "google.com", steps, error: errDetail, journeyType: "organic", duration_ms: Date.now() - startTime };
+    return { success: false, found: false, click: false, position: 0, pages_visited: 0, time_on_site: 0, proxy: "", user_agent: "", device: params.device || "desktop", captcha_used: steps.some(s => s.action === "captcha_solved" || s.action === "captcha_bypassed"), engine: "google.com", steps, error: errDetail, journeyType: "organic", fingerprint: session?.fingerprint || null, duration_ms: Date.now() - startTime };
   } finally {
     if (session) await cleanup(session.browser, session.glApi, session.profileId);
   }

@@ -93,17 +93,17 @@ async function run(job) {
     if (!found) {
       const pageTitle = await page.title();
       log("target_not_found", `"${targetBusiness}" not in results. Title: "${pageTitle}"`);
-      return { success: true, found: false, clickedRank: 0, steps, duration_ms: Date.now() - startTime };
+      return { success: true, found: false, clickedRank: 0, fingerprint: session?.fingerprint || null, steps, duration_ms: Date.now() - startTime };
     }
 
     // Dwell on target
     await dwell(page, dwellTimeMs, log);
-    return { success: true, found: true, clickedRank, steps, duration_ms: Date.now() - startTime };
+    return { success: true, found: true, clickedRank, fingerprint: session?.fingerprint || null, steps, duration_ms: Date.now() - startTime };
 
   } catch (err) {
     const errDetail = err.response?.data ? JSON.stringify(err.response.data).slice(0, 200) : err.message;
     log("error", errDetail);
-    return { success: false, found: false, steps, error: errDetail, duration_ms: Date.now() - startTime };
+    return { success: false, found: false, steps, error: errDetail, fingerprint: session?.fingerprint || null, duration_ms: Date.now() - startTime };
   } finally {
     if (session) await cleanup(session.browser, session.glApi, session.profileId);
   }
