@@ -235,6 +235,14 @@ async function goToNextPage(page, currentPage, log) {
       const btn = page.locator(selector).first();
       if (await btn.isVisible({ timeout: 1500 })) {
         const btnText = (await btn.textContent().catch(() => "")) || "";
+        const btnHref = (await btn.getAttribute("href").catch(() => "")) || "";
+        
+        // SKIP "More results from [site]" links — these are sitelink expansions, NOT pagination
+        if (btnText.match(/more results from/i) || btnHref.includes("site:")) {
+          log("mobile_pagination_skipped", `"${btnText.trim().slice(0, 60)}" — sitelink expansion, not pagination`);
+          continue;
+        }
+        
         log("mobile_pagination_found", `"${btnText.trim().slice(0, 50)}" via ${selector}`);
         
         // Count existing links BEFORE clicking so we can detect new ones

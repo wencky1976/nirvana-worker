@@ -75,6 +75,7 @@ function mapQueueItemToParams(item) {
     wildcard: r.wildcard || false,
     searchEngine: r.search_engine || "google.com",
     device: r.device || "desktop",
+    mobile: r.device === "mobile",
     location: r.location || {},
     journeyType: "organic",
     journey_type: "organic",
