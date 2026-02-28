@@ -24,6 +24,9 @@ const JOURNEYS = {
   squidoosh: require("./journeys/squidoosh"),
   organic: require("./journeys/organic"),
   tiered: require("./journeys/tiered"),
+  "thanos-local": require("./journeys/thanos-local"),
+  "thanos-ecom": require("./journeys/thanos-ecom"),
+  birthday: require("./journeys/birthday"),
   // maps_direct: require("./journeys/maps-direct"),  // coming soon
   // thanos: require("./journeys/thanos"),              // coming soon
 };
@@ -113,7 +116,20 @@ function mapQueueItemToParams(item) {
     journey_type: jType,
   };
   
-  if (jType === "tiered") {
+  if (jType === "birthday") {
+    return {
+      keyword: r.keyword || r.keywords || "",
+      image_base64: r.image_base64 || "",
+      target_destination: r.target_destination || "",
+      wildcard: r.wildcard !== undefined ? r.wildcard : true,
+      device: r.device || "desktop",
+      country: r.country || "US",
+      state: r.state || "",
+      city: r.city || "",
+      journey_type: "birthday",
+    };
+  }
+  if (jType === "tiered" || jType === "thanos-local" || jType === "thanos-ecom") {
     return {
       ...base,
       tier1_url: r.tier1_url || r.target_url || "",
