@@ -31,7 +31,7 @@ function isAdSelector() {
 /**
  * Scan organic-only results on current page, skipping ads and Maps
  */
-async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentPage, wildcard = true) {
+async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentPage, wildcard = true, prevResultsCount = 0) {
   // === STRATEGY 1: Desktop h3-based selectors ===
   let results = [];
   const h3s = page.locator("#search a h3, #rso a h3, a h3");
@@ -212,11 +212,11 @@ async function scanOrganicResults(page, targetBusiness, targetUrl, log, currentP
       
       await link.click();
       log("organic_target_clicked", `page ${currentPage}, pos ${i + 1} (score:${score}): ${txt.slice(0, 100)}`);
-      return { found: true, rank: i + 1, page: currentPage, globalRank: (currentPage - 1) * 10 + i + 1 };
+      return { found: true, rank: i + 1, page: currentPage, globalRank: prevResultsCount + i + 1, totalOnPage: count };
     }
   }
 
-  return { found: false };
+  return { found: false, totalOnPage: count };
 }
 
 /**
@@ -366,6 +366,7 @@ async function run(job) {
     await searchGoogle(page, context, keyword, proxyConfig, log);
 
     // Scan pages 1 through maxPages
+    let cumulativeResults = 0;
     for (let currentPage = 1; currentPage <= maxPages; currentPage++) {
       // Scroll through results naturally
       if (currentPage > 1) {
@@ -374,7 +375,8 @@ async function run(job) {
         await page.waitForTimeout(rand(800, 1500));
       }
 
-      const result = await scanOrganicResults(page, targetBusiness, targetUrl, log, currentPage, wildcard);
+      const result = await scanOrganicResults(page, targetBusiness, targetUrl, log, currentPage, wildcard, cumulativeResults);
+      if (result.totalOnPage) cumulativeResults += result.totalOnPage;
 
       if (result.found) {
         // Target found and clicked — dwell
