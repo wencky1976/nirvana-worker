@@ -8,7 +8,7 @@
  * and only clicks organic blue links, even going to page 2, 3, 4, 5.
  */
 
-const { rand, scoreMatch, createLogger, setupBrowserSession, searchGoogle, dwell, cleanup, handleCaptcha, humanScroll, humanMouseMove, humanIdle } = require("../lib/shared");
+const { rand, scoreMatch, createLogger, setupBrowserSession, searchGoogle, dwell, cleanup, handleCaptcha, humanScroll, humanMouseMove, humanIdle, generatePersonality, logPersonality } = require("../lib/shared");
 
 const MAX_PAGES = 5;
 
@@ -355,7 +355,7 @@ async function run(job) {
   const targetBusiness = params.targetBusiness || params.target_business || "";
   const targetUrl = params.targetUrl || params.target_url || "";
   const wildcard = params.wildcard !== undefined ? params.wildcard : true; // default true for backward compat
-  const dwellTimeMs = params.dwellTimeMs || params.dwell_time_ms || rand(15000, 45000);
+  const dwellTimeMs = params.dwellTimeMs || params.dwell_time_ms || rand(personality.dwell[0], personality.dwell[1]);
   const maxPages = params.maxPages || MAX_PAGES;
 
   let session;
@@ -363,6 +363,12 @@ async function run(job) {
     // Setup browser + navigate to Google + search
     session = await setupBrowserSession(params, log);
     const { page, context, proxyConfig } = session;
+    
+    // Generate unique session personality
+    const isMobile = (params.device === 'mobile');
+    const personality = generatePersonality(isMobile);
+    logPersonality(personality, log);
+    
     await searchGoogle(page, context, keyword, proxyConfig, log);
 
     // Scan pages 1 through maxPages
@@ -372,7 +378,7 @@ async function run(job) {
       if (currentPage > 1) {
         // Light scroll on new page
         await page.mouse.wheel(0, rand(200, 400));
-        await page.waitForTimeout(rand(800, 1500));
+        await page.waitForTimeout(rand(personality.wait[0] * 0.5, personality.wait[1] * 0.5));
       }
 
       const result = await scanOrganicResults(page, targetBusiness, targetUrl, log, currentPage, wildcard, cumulativeResults);
@@ -380,7 +386,7 @@ async function run(job) {
 
       if (result.found) {
         // Target found and clicked — dwell
-        await dwell(page, dwellTimeMs, log);
+        await dwell(page, dwellTimeMs, log, personality);
         const durationMs = Date.now() - startTime;
         return {
           success: true,
@@ -459,7 +465,7 @@ async function run(job) {
   } catch (err) {
     const errDetail = err.response?.data ? JSON.stringify(err.response.data).slice(0, 200) : err.message;
     log("error", errDetail);
-    return { success: false, found: false, click: false, position: 0, pages_visited: 0, time_on_site: 0, proxy: "", user_agent: "", device: params.device || "desktop", captcha_used: steps.some(s => s.action === "captcha_solved" || s.action === "captcha_bypassed"), engine: "google.com", steps, error: errDetail, journeyType: "organic", fingerprint: session?.fingerprint || null, duration_ms: Date.now() - startTime };
+    return { success: false, found: false, click: false, position: 0, pages_visited: 0, time_on_site: 0, proxy: "", user_agent: "", device: params.device || "desktop", captcha_used: steps.some(s => s.action === "captcha_solved" || s.action === "captcha_bypassed"), engine: "google.com", steps, error: errDetail, journeyType: "organic", fingerprint: session?.fingerprint || null, personality: personality ? { traits: personality.traits, timeOfDay: personality.timeOfDay, device: personality.device, wait: personality.wait, dwell: personality.dwell } : null, duration_ms: Date.now() - startTime };
   } finally {
     if (session) await cleanup(session.browser, session.glApi, session.profileId);
   }
