@@ -23,6 +23,7 @@ const { CONFIG, GL_API, GL_HEADERS, rand, cleanupOrphanProfiles } = require("./l
 const JOURNEYS = {
   squidoosh: require("./journeys/squidoosh"),
   organic: require("./journeys/organic"),
+  tiered: require("./journeys/tiered"),
   // maps_direct: require("./journeys/maps-direct"),  // coming soon
   // thanos: require("./journeys/thanos"),              // coming soon
 };
@@ -40,7 +41,7 @@ let jobsFailed = 0;
 let currentJobId = null;
 const workerStartTime = Date.now();
 const WORKER_ID = process.env.WORKER_ID || `worker-${require("os").hostname()}`;
-const WORKER_VERSION = "3.2";
+const WORKER_VERSION = "3.3";
 const HEARTBEAT_INTERVAL = 60000; // 60s
 
 // ── Worker Heartbeat ────────────────────────────────────
@@ -102,7 +103,28 @@ function mapQueueItemToParams(item) {
   // queue_items store config in `result` field (set at creation time)
   // Worker journeys expect `params` with keyword, targetUrl, etc.
   const r = item.result || {};
+  const jType = r.journey_type || "organic";
+  
+  const base = {
+    device: r.device || "desktop",
+    mobile: r.device === "mobile",
+    location: r.location || {},
+    journeyType: jType,
+    journey_type: jType,
+  };
+  
+  if (jType === "tiered") {
+    return {
+      ...base,
+      tier1_url: r.tier1_url || r.target_url || "",
+      tier1Url: r.tier1_url || r.target_url || "",
+      target_destination: r.target_destination || "",
+      targetDestination: r.target_destination || "",
+    };
+  }
+  
   return {
+    ...base,
     keyword: r.keyword || "",
     targetUrl: r.target_url || "",
     targetBusiness: r.target_url ? new URL(r.target_url.startsWith("http") ? r.target_url : `https://${r.target_url}`).hostname.replace("www.", "") : "",
@@ -110,11 +132,6 @@ function mapQueueItemToParams(item) {
     target_business: r.target_url ? new URL(r.target_url.startsWith("http") ? r.target_url : `https://${r.target_url}`).hostname.replace("www.", "") : "",
     wildcard: r.wildcard || false,
     searchEngine: r.search_engine || "google.com",
-    device: r.device || "desktop",
-    mobile: r.device === "mobile",
-    location: r.location || {},
-    journeyType: "organic",
-    journey_type: "organic",
   };
 }
 
@@ -167,12 +184,17 @@ async function processJob(job) {
   const originalConfig = job.result || {};
   const mergedResult = {
     ...result,
+    // Preserve original config so Restart works
     keyword: originalConfig.keyword || job.params?.keyword || result.keyword,
     target_url: originalConfig.target_url || job.params?.target_url || result.target_url,
     wildcard: originalConfig.wildcard,
     search_engine: originalConfig.search_engine || job.params?.searchEngine,
     device: originalConfig.device || job.params?.device,
     location: originalConfig.location || job.params?.location,
+    // Tiered fields
+    tier1_url: originalConfig.tier1_url || job.params?.tier1_url || result.tier1_url,
+    target_destination: originalConfig.target_destination || job.params?.target_destination || result.target_destination,
+    journey_type: originalConfig.journey_type || result.journeyType || type,
   };
   try {
     await supabase
@@ -242,7 +264,7 @@ async function poll() {
 async function main() {
   const journeyList = Object.keys(JOURNEYS).join(", ");
   console.log("╔══════════════════════════════════════════╗");
-  console.log("║   🦑 NirvanaTraffic Worker v3.2          ║");
+  console.log("║   🦑 NirvanaTraffic Worker v3.3          ║");
   console.log("║   🎭 GoLogin Fingerprinting               ║");
   console.log("║   🌐 Decodo Residential + Mobile Proxies  ║");
   console.log("║   📦 Journeys: " + journeyList.padEnd(25) + " ║");
@@ -273,6 +295,16 @@ async function main() {
 
   // Clean up any orphan GoLogin profiles from previous crashed runs
   await cleanupOrphanProfiles();
+
+  // Reset stuck jobs — anything "running" for >10 min is dead
+  const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const { data: stuckJobs } = await supabase
+    .from("queue_items")
+    .update({ status: "failed", completed_at: new Date().toISOString(), result: { error: "Stuck job — running >10 min, reset by worker" } })
+    .eq("status", "running")
+    .lt("started_at", tenMinAgo)
+    .select("id");
+  if (stuckJobs?.length) console.log(`🧹 Reset ${stuckJobs.length} stuck jobs (running >10 min)`);
 
   // Start heartbeat
   await sendHeartbeat();

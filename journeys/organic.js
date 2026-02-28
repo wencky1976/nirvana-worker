@@ -355,10 +355,11 @@ async function run(job) {
   const targetBusiness = params.targetBusiness || params.target_business || "";
   const targetUrl = params.targetUrl || params.target_url || "";
   const wildcard = params.wildcard !== undefined ? params.wildcard : true; // default true for backward compat
-  const dwellTimeMs = params.dwellTimeMs || params.dwell_time_ms || rand(personality.dwell[0], personality.dwell[1]);
+  const dwellTimeMs = params.dwellTimeMs || params.dwell_time_ms || 0;
   const maxPages = params.maxPages || MAX_PAGES;
 
   let session;
+  let personality;
   try {
     // Setup browser + navigate to Google + search
     session = await setupBrowserSession(params, log);
@@ -366,7 +367,7 @@ async function run(job) {
     
     // Generate unique session personality
     const isMobile = (params.device === 'mobile');
-    const personality = generatePersonality(isMobile);
+    personality = generatePersonality(isMobile);
     logPersonality(personality, log);
     
     await searchGoogle(page, context, keyword, proxyConfig, log);
@@ -376,8 +377,8 @@ async function run(job) {
     for (let currentPage = 1; currentPage <= maxPages; currentPage++) {
       // Scroll through results naturally
       if (currentPage > 1) {
-        // Light scroll on new page
-        await page.mouse.wheel(0, rand(200, 400));
+        // Light scroll on new page (auto-detects mobile vs desktop)
+        await humanScroll(page, rand(200, 400));
         await page.waitForTimeout(rand(personality.wait[0] * 0.5, personality.wait[1] * 0.5));
       }
 
@@ -386,7 +387,7 @@ async function run(job) {
 
       if (result.found) {
         // Target found and clicked — dwell
-        await dwell(page, dwellTimeMs, log, personality);
+        await dwell(page, dwellTimeMs || rand(personality.dwell[0], personality.dwell[1]), log, personality);
         const durationMs = Date.now() - startTime;
         return {
           success: true,
