@@ -35,6 +35,42 @@ const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || "1", 10);
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 let activeJobs = 0;
+let jobsCompleted = 0;
+let jobsFailed = 0;
+let currentJobId = null;
+const workerStartTime = Date.now();
+const WORKER_ID = process.env.WORKER_ID || `worker-${require("os").hostname()}`;
+const WORKER_VERSION = "3.2";
+const HEARTBEAT_INTERVAL = 60000; // 60s
+
+// ── Worker Heartbeat ────────────────────────────────────
+async function sendHeartbeat() {
+  try {
+    const os = require("os");
+    await supabase.from("worker_heartbeats").upsert({
+      id: WORKER_ID,
+      last_heartbeat: new Date().toISOString(),
+      status: currentJobId ? "busy" : "idle",
+      uptime_seconds: Math.floor((Date.now() - workerStartTime) / 1000),
+      jobs_completed: jobsCompleted,
+      jobs_failed: jobsFailed,
+      current_job: currentJobId || null,
+      version: WORKER_VERSION,
+      system_info: {
+        platform: os.platform(),
+        arch: os.arch(),
+        hostname: os.hostname(),
+        cpus: os.cpus().length,
+        memory_gb: Math.round(os.totalmem() / 1073741824 * 10) / 10,
+        memory_free_gb: Math.round(os.freemem() / 1073741824 * 10) / 10,
+        node: process.version,
+      },
+    }, { onConflict: "id" });
+  } catch (e) {
+    // Silent — don't crash worker if heartbeat fails
+    console.log(`  ⚠️ Heartbeat failed: ${e.message}`);
+  }
+}
 
 // ── Job Router ──────────────────────────────────────────
 function getJourney(job) {
@@ -91,6 +127,7 @@ async function processJob(job) {
   }
   const { journey, type } = getJourney(job);
   const timeoutMs = job.params?.timeoutMs || JOB_TIMEOUT_MS;
+  currentJobId = jobId;
   console.log(`\n🦑 Processing job ${jobId} — [${type}] ${job.params?.keyword || "no keyword"} (timeout: ${timeoutMs / 1000}s)`);
 
   await supabase
@@ -165,6 +202,9 @@ async function processJob(job) {
     console.error(`  ❌ Failed to save result for job ${jobId}:`, dbErr.message);
   }
 
+  if (result.success) jobsCompleted++; else jobsFailed++;
+  currentJobId = null;
+
   console.log(
     `  ${result.success ? "✅" : "❌"} Job ${jobId} [${type}] ${result.success ? "completed" : "failed"} — ${result.found ? `FOUND (rank #${result.clickedRank})` : "not found"} (${(result.duration_ms / 1000).toFixed(1)}s)`
   );
@@ -201,7 +241,7 @@ async function poll() {
 async function main() {
   const journeyList = Object.keys(JOURNEYS).join(", ");
   console.log("╔══════════════════════════════════════════╗");
-  console.log("║   🦑 NirvanaTraffic Worker v3.1          ║");
+  console.log("║   🦑 NirvanaTraffic Worker v3.2          ║");
   console.log("║   🎭 GoLogin Fingerprinting               ║");
   console.log("║   🌐 Decodo Residential + Mobile Proxies  ║");
   console.log("║   📦 Journeys: " + journeyList.padEnd(25) + " ║");
@@ -232,6 +272,11 @@ async function main() {
 
   // Clean up any orphan GoLogin profiles from previous crashed runs
   await cleanupOrphanProfiles();
+
+  // Start heartbeat
+  await sendHeartbeat();
+  setInterval(sendHeartbeat, HEARTBEAT_INTERVAL);
+  console.log(`💓 Heartbeat active (every ${HEARTBEAT_INTERVAL / 1000}s as "${WORKER_ID}")`);
 
   console.log("👀 Watching for queued jobs...\n");
 
