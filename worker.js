@@ -218,6 +218,7 @@ async function poll() {
     .from("queue_items")
     .select("*")
     .eq("status", "pending")
+    .lte("scheduled_for", new Date().toISOString())
     .order("priority", { ascending: false })
     .order("scheduled_for", { ascending: true })
     .limit(MAX_CONCURRENT - activeJobs);
