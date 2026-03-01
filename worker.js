@@ -27,6 +27,9 @@ const JOURNEYS = {
   "thanos-local": require("./journeys/thanos-local"),
   "thanos-ecom": require("./journeys/thanos-ecom"),
   birthday: require("./journeys/birthday"),
+  "squidoosh-local": require("./journeys/squidoosh-local"),
+  "super-rocket": require("./journeys/super-rocket"),
+  "pgs": require("./journeys/pgs"),
   // maps_direct: require("./journeys/maps-direct"),  // coming soon
   // thanos: require("./journeys/thanos"),              // coming soon
 };
@@ -44,7 +47,7 @@ let jobsFailed = 0;
 let currentJobId = null;
 const workerStartTime = Date.now();
 const WORKER_ID = process.env.WORKER_ID || `worker-${require("os").hostname()}`;
-const WORKER_VERSION = "3.3";
+const WORKER_VERSION = "3.5";
 const HEARTBEAT_INTERVAL = 60000; // 60s
 
 // ── Worker Heartbeat ────────────────────────────────────
@@ -129,6 +132,52 @@ function mapQueueItemToParams(item) {
       journey_type: "birthday",
     };
   }
+  if (jType === "pgs") {
+    return {
+      ...base,
+      keyword: r.keyword || r.business_name || "",
+      business_name: r.business_name || "",
+      address: r.address || r.business_address || "",
+      latitude: r.latitude || 0,
+      longitude: r.longitude || 0,
+      target_url: r.target_url || r.website || "",
+      website: r.website || r.target_url || "",
+      wildcard: r.wildcard !== undefined ? r.wildcard : true,
+      grid_size: r.grid_size || 7,
+      spacing_miles: r.spacing_miles || 1,
+      cid: r.cid || "",
+    };
+  }
+  if (jType === "super-rocket") {
+    return {
+      ...base,
+      keyword: r.keyword || r.business_name || "",
+      business_name: r.business_name || "",
+      latitude: r.latitude || 0,
+      longitude: r.longitude || 0,
+      target_url: r.target_url || r.website || "",
+      website: r.website || r.target_url || "",
+      wildcard: r.wildcard !== undefined ? r.wildcard : true,
+      grid_size: r.grid_size || 7,
+      spacing_miles: r.spacing_miles || 1,
+      cid: r.cid || "",
+    };
+  }
+  if (jType === "squidoosh-local") {
+    return {
+      ...base,
+      keyword: r.keyword || r.business_name || "",
+      business_name: r.business_name || "",
+      latitude: r.latitude || 0,
+      longitude: r.longitude || 0,
+      target_url: r.target_url || r.website || "",
+      website: r.website || r.target_url || "",
+      wildcard: r.wildcard !== undefined ? r.wildcard : true,
+      grid_size: r.grid_size || 7,
+      spacing_miles: r.spacing_miles || 1,
+      cid: r.cid || "",
+    };
+  }
   if (jType === "tiered" || jType === "thanos-local" || jType === "thanos-ecom") {
     return {
       ...base,
@@ -143,9 +192,9 @@ function mapQueueItemToParams(item) {
     ...base,
     keyword: r.keyword || "",
     targetUrl: r.target_url || "",
-    targetBusiness: r.target_url ? new URL(r.target_url.startsWith("http") ? r.target_url : `https://${r.target_url}`).hostname.replace("www.", "") : "",
+    targetBusiness: (() => { try { return r.target_url ? new URL(r.target_url.startsWith("http") ? r.target_url : `https://${r.target_url}`).hostname.replace("www.", "") : ""; } catch { return ""; } })(),
     target_url: r.target_url || "",
-    target_business: r.target_url ? new URL(r.target_url.startsWith("http") ? r.target_url : `https://${r.target_url}`).hostname.replace("www.", "") : "",
+    target_business: (() => { try { return r.target_url ? new URL(r.target_url.startsWith("http") ? r.target_url : `https://${r.target_url}`).hostname.replace("www.", "") : ""; } catch { return ""; } })(),
     wildcard: r.wildcard || false,
     searchEngine: r.search_engine || "google.com",
   };
@@ -211,6 +260,15 @@ async function processJob(job) {
     tier1_url: originalConfig.tier1_url || job.params?.tier1_url || result.tier1_url,
     target_destination: originalConfig.target_destination || job.params?.target_destination || result.target_destination,
     journey_type: originalConfig.journey_type || result.journeyType || type,
+    // Squidoosh / Super Rocket fields
+    cid: originalConfig.cid || job.params?.cid || result.cid,
+    business_name: originalConfig.business_name || job.params?.business_name || result.business_name,
+    latitude: originalConfig.latitude || job.params?.latitude || result.latitude,
+    longitude: originalConfig.longitude || job.params?.longitude || result.longitude,
+    website: originalConfig.website || job.params?.website || result.website,
+    grid_size: originalConfig.grid_size || job.params?.grid_size || result.grid_size,
+    spacing_miles: originalConfig.spacing_miles || job.params?.spacing_miles || result.spacing_miles,
+    address: originalConfig.address || job.params?.address || result.address,
   };
   try {
     await supabase

@@ -3,7 +3,7 @@
  * Google Images search → find target image by perceptual hash → click → click through to site → dwell
  */
 
-const { rand, createLogger, setupBrowserSession, dwell, cleanup, humanScroll, humanMouseMove, humanIdle, generatePersonality, logPersonality } = require("../lib/shared");
+const { rand, createLogger, setupBrowserSession, dwell, cleanup, humanScroll, humanMouseMove, humanIdle, generatePersonality, logPersonality, searchGoogle, handleCaptcha } = require("../lib/shared");
 
 // ── Compute perceptual hash of an image in-browser via Canvas ──
 // Returns a 64-bit binary string (8x8 average hash)
@@ -169,28 +169,56 @@ async function run(job) {
   let personality;
   try {
     session = await setupBrowserSession({ ...params, skipGoogle: false }, log);
-    const { page } = session;
+    const { page, context, proxyConfig } = session;
 
     const isMobile = (params.device === "mobile");
     personality = generatePersonality(isMobile);
     logPersonality(personality, log);
 
-    // Step 1: Search on Google
+    // Step 1: Search on Google (uses shared humanType + CAPTCHA handling)
     log("searching", `Keyword: "${keyword}"`);
-    const searchInput = page.locator('textarea[name="q"], input[name="q"]').first();
-    await searchInput.fill(keyword);
-    await page.waitForTimeout(rand(500, 1500));
-    await searchInput.press("Enter");
-    await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
-    await page.waitForTimeout(rand(2000, 4000));
+    await searchGoogle(page, session.context, keyword, session.proxyConfig, log);
     steps.push({ action: "searched", keyword, time: Date.now() - startTime });
 
     // Step 2: Click "Images" tab
     log("switching_to_images", "Looking for Images tab...");
-    const imagesTab = page.locator('a:has-text("Images")').first();
-    await imagesTab.click({ timeout: 10000 });
+    
+    // Try multiple selectors for Images tab
+    const imagesSelectors = [
+      'a:has-text("Images")',
+      'a[href*="tbm=isch"]',
+      'div[role="listitem"] a:has-text("Images")',
+    ];
+    
+    let imagesClicked = false;
+    for (const sel of imagesSelectors) {
+      try {
+        const tab = page.locator(sel).first();
+        if (await tab.isVisible({ timeout: 3000 })) {
+          const box = await tab.boundingBox();
+          if (box) {
+            await humanMouseMove(page, Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));
+            await page.waitForTimeout(rand(200, 600));
+            await tab.click({ timeout: 5000 });
+            imagesClicked = true;
+            break;
+          }
+        }
+      } catch {}
+    }
+    
+    if (!imagesClicked) {
+      // Fallback: navigate directly to Google Images with the keyword
+      const imagesUrl = `https://www.google.com/search?q=${encodeURIComponent(keyword)}&tbm=isch`;
+      await page.goto(imagesUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+    }
+    
     await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
     await page.waitForTimeout(rand(3000, 5000));
+    
+    // Check for CAPTCHA on images page
+    await handleCaptcha(page, session.context, session.proxyConfig, log);
+    
     log("images_loaded", page.url().slice(0, 80));
     steps.push({ action: "images_tab", time: Date.now() - startTime });
 
